@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod lint;
+pub mod notes;
 pub mod query;
 pub mod read;
 pub mod storage;
