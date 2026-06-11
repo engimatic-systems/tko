@@ -621,13 +621,13 @@ status in [open, in_progress]
 created >= 2026-06-01
 assignee = rosin
 parent = pla-root
-external_ref = gh-123
+externalref = gh-123
 tags contain repo/tko
 deps contain pla-gq0a
 links contain pla-abcd
 has tags
 no deps
-has external_ref
+has externalref
 no parent
 status = open and priority <= 2
 status in [open, in_progress] and tags contain repo/tko
@@ -637,13 +637,10 @@ not tags contain archived
 
 Fields:
 
-- scalar string fields: `id`, `status`, `type`, `assignee`, `external_ref`,
+- scalar string fields: `id`, `status`, `type`, `assignee`, `externalref`,
   `parent`, `created`, `title`
 - scalar numeric fields: `priority`
 - plural string fields: `deps`, `links`, `tags`
-
-DSL field names use snake_case even when display output uses hyphenated labels,
-for example `external_ref` in predicates and `external-ref` in `show` output.
 
 Grammar:
 
