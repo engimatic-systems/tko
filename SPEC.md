@@ -676,9 +676,9 @@ Rules:
 - Empty optional strings count as `no <scalar_field>`.
 - `contain` is only valid for plural fields.
 - `in` is only valid as scalar membership in a literal list.
-- String values are bare words unless they need quoting.
-- Quoted strings may be added when values need whitespace or punctuation that
-  conflicts with grammar tokens.
+- String values are bare tokens.
+- Quoted strings are not part of the v1 DSL. Add them later only if real ticket
+  data makes bare tokens too restrictive.
 - `priority` comparisons are numeric.
 - `created` comparisons are lexical comparisons over canonical timestamp/date
   strings.
@@ -688,11 +688,9 @@ Rules:
 Compatibility:
 
 - The Bash implementation treats the optional query argument as a `jq` filter.
-- Rust `query` does not preserve jq as the primary filter language.
-- If jq compatibility is retained, it should be explicit, such as
-  `tko query --jq <filter>`, and not mixed with the typed predicate grammar.
-- Bash JSON emits `priority` as a string. Rust may emit it as a number after a
-  compatibility decision.
+- Rust `query` does not preserve jq compatibility.
+- Bash JSON emits `priority` as a string. Rust JSON emits `priority` as a
+  number.
 
 ### `lint`
 
@@ -760,8 +758,7 @@ Current implementation depends on common Unix tools:
 - rg or grep for internal property update checks
 
 A rewrite should not require these tools for core behavior. Query filtering
-should use the native typed predicate DSL unless explicit jq compatibility is
-added later.
+uses the native typed predicate DSL.
 
 ## Planned Extensions
 
