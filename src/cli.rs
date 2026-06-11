@@ -56,16 +56,16 @@ enum Command {
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
-    /// Display ticket metadata and body outline.
+    /// Display ticket metadata/body, or one note with --note.
     Show(ShowArgs),
     /// Append a timestamped note.
     #[command(name = "add-note")]
     AddNote(AddNoteArgs),
     /// Output tickets as JSON objects, optionally filtered.
     Query(QueryArgs),
-    /// Validate semantic heading conventions.
+    /// Validate semantic headings and lint rules L001-L004, including L003 note-title length.
     Lint(LintArgs),
-    /// List note headings.
+    /// List note headings as timestamp plus title.
     Notes(IdArgs),
     /// Migrate legacy TK_* properties to TKO_* properties.
     #[command(name = "migrate-legacy-properties")]
@@ -142,7 +142,7 @@ struct ShowArgs {
     #[arg(short = 'f', long)]
     full: bool,
     id: String,
-    #[arg(long)]
+    #[arg(long, help = "Print exactly one matching note subtree")]
     note: Option<String>,
 }
 
@@ -167,35 +167,6 @@ struct MigrationArgs {
     #[arg(long)]
     apply: bool,
     id_or_path: Option<PathBuf>,
-}
-
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Help => "help",
-            Command::Create(_) => "create",
-            Command::Start(_) => "start",
-            Command::Block(_) => "block",
-            Command::Close(_) => "close",
-            Command::Reopen(_) => "reopen",
-            Command::Status(_) => "status",
-            Command::Dep(_) => "dep",
-            Command::Undep(_) => "undep",
-            Command::Link(_) => "link",
-            Command::Unlink(_) => "unlink",
-            Command::Tag(_) => "tag",
-            Command::Untag(_) => "untag",
-            Command::Ready(_) => "ready",
-            Command::Blocked(_) => "blocked",
-            Command::List(_) => "list",
-            Command::Show(_) => "show",
-            Command::AddNote(_) => "add-note",
-            Command::Query(_) => "query",
-            Command::Lint(_) => "lint",
-            Command::Notes(_) => "notes",
-            Command::MigrateLegacyProperties(_) => "migrate-legacy-properties",
-        }
-    }
 }
 
 pub fn run_from<I, T>(args: I) -> i32
@@ -305,10 +276,10 @@ where
             print_read(crate::read::list(&store, &filters))
         }
         Some(Command::Show(args)) => {
-            if args.note.is_some() {
-                return Err("not implemented: show --note".to_string());
-            }
             let store = read_store()?;
+            if let Some(note_match) = args.note {
+                return print_note(crate::notes::show_note(&store, &args.id, &note_match));
+            }
             print_read(crate::read::show(&store, &args.id, args.full))
         }
         Some(Command::Query(args)) => {
@@ -317,7 +288,9 @@ where
             print_read(crate::read::query(&store, Some(&predicate)))
         }
         Some(Command::Lint(args)) => run_lint(args),
-        Some(command) => Err(format!("not implemented: {}", command.name())),
+        Some(Command::Notes(args)) => {
+            print_note(crate::notes::list_notes(&read_store()?, &args.id))
+        }
     }
 }
 
@@ -401,6 +374,12 @@ fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
 }
 
 fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
+    Ok(())
+}
+
+fn print_note(result: crate::notes::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
