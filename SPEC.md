@@ -621,13 +621,13 @@ status in [open, in_progress]
 created >= 2026-06-01
 assignee = rosin
 parent = pla-root
-externalref = gh-123
+external-ref = gh-123
 tags contain repo/tko
 deps contain pla-gq0a
 links contain pla-abcd
 has tags
 no deps
-has externalref
+has external-ref
 no parent
 status = open and priority <= 2
 status in [open, in_progress] and tags contain repo/tko
@@ -637,10 +637,13 @@ not tags contain archived
 
 Fields:
 
-- scalar string fields: `id`, `status`, `type`, `assignee`, `externalref`,
+- scalar string fields: `id`, `status`, `type`, `assignee`, `external-ref`,
   `parent`, `created`, `title`
 - scalar numeric fields: `priority`
 - plural string fields: `deps`, `links`, `tags`
+
+Field names may contain hyphens. The predicate DSL has no subtraction operator,
+so `external-ref` is parsed as one field name.
 
 Grammar:
 
