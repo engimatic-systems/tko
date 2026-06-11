@@ -39,10 +39,7 @@ fn help_command_prints_help() {
 
 #[test]
 fn known_commands_parse_but_remain_stubbed() {
-    let cases: &[(&[&str], &str)] = &[
-        (&["lint", "sys-ywp7"], "lint"),
-        (&["notes", "sys-ywp7"], "notes"),
-    ];
+    let cases: &[(&[&str], &str)] = &[(&["notes", "sys-ywp7"], "notes")];
 
     for (args, command_name) in cases {
         let output = run(args);
