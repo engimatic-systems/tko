@@ -1,5 +1,6 @@
 // Generated from tko.org. Do not edit by hand.
 
+use crate::read::Filters;
 use crate::storage::{TicketStore, migrate_legacy_properties};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::env;
@@ -220,6 +221,29 @@ where
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
         Some(Command::MigrateLegacyProperties(args)) => run_migration(args),
+        Some(Command::Ready(args)) => {
+            print_read(crate::read::ready(&read_store()?, &filters(args, None)?))
+        }
+        Some(Command::Blocked(args)) => {
+            print_read(crate::read::blocked(&read_store()?, &filters(args, None)?))
+        }
+        Some(Command::List(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, args.status)?;
+            print_read(crate::read::list(&store, &filters))
+        }
+        Some(Command::Show(args)) => {
+            if args.note.is_some() {
+                return Err("not implemented: show --note".to_string());
+            }
+            let store = read_store()?;
+            print_read(crate::read::show(&store, &args.id, args.full))
+        }
+        Some(Command::Query(args)) => {
+            let store = read_store()?;
+            let predicate = args.predicate.join(" ");
+            print_read(crate::read::query(&store, Some(&predicate)))
+        }
         Some(command) => Err(format!("not implemented: {}", command.name())),
     }
 }
@@ -228,6 +252,27 @@ fn print_help() -> io::Result<()> {
     let mut command = Cli::command();
     command.print_long_help()?;
     println!();
+    Ok(())
+}
+
+fn read_store() -> Result<TicketStore, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
+    TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), false)
+        .map_err(|error| error.to_string())
+}
+
+fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
+    Ok(Filters {
+        status,
+        assignee: args.assignee,
+        tag: args.tag,
+    })
+}
+
+fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
     Ok(())
 }
 
