@@ -579,7 +579,7 @@ Compatibility: the Bash implementation accepts long first lines and may match a
 Usage:
 
 ```text
-tko query [jq-filter]
+tko query [predicate]
 ```
 
 Outputs one compact JSON object per ticket in filename sort order.
@@ -605,20 +605,94 @@ Optional fields appear only when non-empty:
 - `external-ref`
 - `parent`
 
-Current Bash behavior: if a filter is provided, `query` pipes all objects
-through `jq -c <filter>`.
+If a predicate is provided, only matching tickets are emitted.
 
-Rust target: undecided. The Bash `jq` hook was cheap glue and contributes to
-poor performance on commands that repeatedly materialize ticket JSON. The Rust
-implementation may keep jq compatibility, provide a native query language, or
-split those into separate modes. Do not freeze this interface without a focused
-decision.
+The Rust target owns a small typed predicate DSL. It evaluates against the
+ticket model, not against serialized JSON.
+
+Predicate examples:
+
+```text
+status = open
+status != closed
+priority <= 2
+type in [bug, feature]
+status in [open, in_progress]
+created >= 2026-06-01
+assignee = rosin
+parent = pla-root
+external_ref = gh-123
+tags contain repo/tko
+deps contain pla-gq0a
+links contain pla-abcd
+has tags
+no deps
+has external_ref
+no parent
+status = open and priority <= 2
+status in [open, in_progress] and tags contain repo/tko
+(type = bug or priority = 0) and no deps
+not tags contain archived
+```
+
+Fields:
+
+- scalar string fields: `id`, `status`, `type`, `assignee`, `external_ref`,
+  `parent`, `created`, `title`
+- scalar numeric fields: `priority`
+- plural string fields: `deps`, `links`, `tags`
+
+DSL field names use snake_case even when display output uses hyphenated labels,
+for example `external_ref` in predicates and `external-ref` in `show` output.
+
+Grammar:
+
+```text
+expr        := or_expr
+or_expr     := and_expr ("or" and_expr)*
+and_expr    := not_expr ("and" not_expr)*
+not_expr    := "not" not_expr | primary
+primary     := comparison | membership | presence | "(" expr ")"
+
+comparison  := scalar_field compare_op value
+compare_op  := "=" | "!=" | "<" | "<=" | ">" | ">="
+
+membership  := plural_field "contain" value
+             | scalar_field "in" list
+
+presence    := "has" field
+             | "no" field
+
+list        := "[" value ("," value)* "]"
+```
+
+Rules:
+
+- No field aliases in v1. Use `tags`, `deps`, and `links`, not `tag`, `dep`, or
+  `link`.
+- `has <field>` means the field is present and non-empty.
+- `no <field>` means the field is absent or empty.
+- Empty lists count as `no <plural_field>`.
+- Empty optional strings count as `no <scalar_field>`.
+- `contain` is only valid for plural fields.
+- `in` is only valid as scalar membership in a literal list.
+- String values are bare words unless they need quoting.
+- Quoted strings may be added when values need whitespace or punctuation that
+  conflicts with grammar tokens.
+- `priority` comparisons are numeric.
+- `created` comparisons are lexical comparisons over canonical timestamp/date
+  strings.
+- Unknown fields, type-incompatible operators, and malformed predicates are
+  usage errors.
 
 Compatibility:
 
-- `jq` is required for all `query` usage, even without a filter.
-- Bad filters fail with `jq`'s own error text and status.
-- `priority` is a string in JSON output.
+- The Bash implementation treats the optional query argument as a `jq` filter.
+- Rust `query` does not preserve jq as the primary filter language.
+- If jq compatibility is retained, it should be explicit, such as
+  `tko query --jq <filter>`, and not mixed with the typed predicate grammar.
+- Bash JSON emits `priority` as a string. Rust may emit it as a number after a
+  compatibility decision.
 
 ### `lint`
 
@@ -682,11 +756,12 @@ Current implementation depends on common Unix tools:
 - awk
 - coreutils
 - git for default assignee in `create`
-- jq for `query`
+- jq for Bash `query`
 - rg or grep for internal property update checks
 
-A rewrite should not require these tools for core behavior. Query filtering is
-still an open design question; do not preserve a jq dependency by accident.
+A rewrite should not require these tools for core behavior. Query filtering
+should use the native typed predicate DSL unless explicit jq compatibility is
+added later.
 
 ## Planned Extensions
 
@@ -735,10 +810,3 @@ Expected behavior:
 - timestamp matching is allowed if specified by final design
 - print exactly one matching note subtree
 - if ambiguous, list candidates rather than printing all bodies
-
-## Open Design Questions
-
-Open questions before freezing the Rust implementation:
-
-- Should `query` keep embedding jq semantics, or should jq become an optional
-  compatibility mode, or should it be replaced by a native query surface?
