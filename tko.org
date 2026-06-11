@@ -24,11 +24,13 @@ Generated files in this scaffold:
 - =src/storage.rs=
 - =src/query.rs=
 - =src/read.rs=
+- =src/write.rs=
 - =src/cli.rs=
 - =src/main.rs=
 - =tests/cli.rs=
 - =tests/storage.rs=
 - =tests/read.rs=
+- =tests/write.rs=
 
 * Project Files
 :PROPERTIES:
@@ -62,6 +64,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
+chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1.0"
 
@@ -80,7 +83,7 @@ tempfile = "3.23"
 CARGO ?= cargo
 EMACS ?= emacs
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs
 
 .PHONY: tangle check test
 
@@ -112,6 +115,7 @@ pub mod cli;
 pub mod query;
 pub mod read;
 pub mod storage;
+pub mod write;
 #+end_src
 
 ** Storage Model
@@ -1413,6 +1417,542 @@ fn finish_lines(lines: Vec<String>) -> String {
 }
 #+end_src
 
+** Write Commands
+:PROPERTIES:
+:CUSTOM_ID: write-commands
+:END:
+
+#+begin_src rust :tangle src/write.rs
+// Generated from tko.org. Do not edit by hand.
+
+use crate::storage::{TicketStore, format_list_value};
+use chrono::Utc;
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub type Result<T> = std::result::Result<T, WriteError>;
+
+#[derive(Debug)]
+pub struct WriteError {
+    message: String,
+}
+
+impl WriteError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for WriteError {}
+
+#[derive(Debug, Clone)]
+pub struct CreateTicket {
+    pub title: String,
+    pub description: Option<String>,
+    pub scope: Option<String>,
+    pub design: Option<String>,
+    pub acceptance: Option<String>,
+    pub ticket_type: String,
+    pub priority: u8,
+    pub assignee: Option<String>,
+    pub external_ref: Option<String>,
+    pub parent: Option<String>,
+    pub tags: Vec<String>,
+}
+
+pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    validate_type(&input.ticket_type)?;
+    validate_priority(input.priority)?;
+    fs::create_dir_all(store.tickets_dir()).map_err(|error| WriteError::new(error.to_string()))?;
+
+    let id = unique_id(store, cwd)?;
+    let parent = input
+        .parent
+        .as_ref()
+        .map(|parent| resolved_id(store, parent))
+        .transpose()?;
+    let assignee = input.assignee.or_else(git_user_name);
+
+    let mut text = String::new();
+    text.push_str(":PROPERTIES:\n");
+    push_property(&mut text, "TKO_ID", &id);
+    push_property(&mut text, "TKO_STATUS", "open");
+    push_property(&mut text, "TKO_DEPS", "[]");
+    push_property(&mut text, "TKO_LINKS", "[]");
+    push_property(
+        &mut text,
+        "TKO_CREATED",
+        &Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    );
+    push_property(&mut text, "TKO_TYPE", &input.ticket_type);
+    push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
+    if let Some(assignee) = assignee.filter(|value| !value.trim().is_empty()) {
+        push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
+    }
+    if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
+        push_property(&mut text, "TKO_EXTERNAL_REF", external_ref.trim());
+    }
+    if let Some(parent) = parent {
+        push_property(&mut text, "TKO_PARENT", &parent);
+    }
+    if !input.tags.is_empty() {
+        push_property(&mut text, "TKO_TAGS", &format_list_value(&input.tags));
+    }
+    text.push_str(":END:\n\n");
+    text.push_str(&format!("* {}\n", input.title));
+    push_section(&mut text, "Description", input.description.as_deref());
+    push_section(&mut text, "Scope", input.scope.as_deref());
+    push_section(&mut text, "Design", input.design.as_deref());
+    push_section(
+        &mut text,
+        "Acceptance Criteria",
+        input.acceptance.as_deref(),
+    );
+
+    fs::write(store.tickets_dir().join(format!("{id}.org")), text)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(id)
+}
+
+pub fn set_status(store: &TicketStore, id: &str, status: &str) -> Result<String> {
+    validate_status(status)?;
+    let resolved = resolved_id(store, id)?;
+    store
+        .set_property(&resolved, "TKO_STATUS", status)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(format!("Updated {resolved} -> {status}\n"))
+}
+
+pub fn add_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<String> {
+    mutate_relation(
+        store,
+        id,
+        dep_id,
+        "TKO_DEPS",
+        RelationKind::Dependency,
+        Mutation::Add,
+    )
+}
+
+pub fn remove_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<String> {
+    mutate_relation(
+        store,
+        id,
+        dep_id,
+        "TKO_DEPS",
+        RelationKind::Dependency,
+        Mutation::Remove,
+    )
+}
+
+pub fn add_link(store: &TicketStore, id: &str, target_id: &str) -> Result<String> {
+    mutate_link(store, id, target_id, Mutation::Add)
+}
+
+pub fn remove_link(store: &TicketStore, id: &str, target_id: &str) -> Result<String> {
+    mutate_link(store, id, target_id, Mutation::Remove)
+}
+
+pub fn add_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String> {
+    mutate_tags(store, id, tags, Mutation::Add)
+}
+
+pub fn remove_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String> {
+    mutate_tags(store, id, tags, Mutation::Remove)
+}
+
+pub fn add_note(store: &TicketStore, id: &str, text: &str) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let path = store
+        .resolve_id(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
+    let note_text = text.replace("\\n", "\n");
+    let (title, body) = split_note_text(&note_text);
+    if title.chars().count() > 72 {
+        return Err(WriteError::new("note title exceeds 72 characters"));
+    }
+
+    let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
+    let mut note = if title.is_empty() {
+        format!("*** {timestamp}\n")
+    } else {
+        format!("*** {timestamp} {title}\n")
+    };
+    if !body.is_empty() {
+        note.push_str(body);
+        if !note.ends_with('\n') {
+            note.push('\n');
+        }
+    }
+
+    let updated = append_note(document, &note);
+    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(format!("Note added to {resolved}\n"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mutation {
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationKind {
+    Dependency,
+    Link,
+}
+
+fn mutate_relation(
+    store: &TicketStore,
+    id: &str,
+    target_id: &str,
+    property: &str,
+    kind: RelationKind,
+    mutation: Mutation,
+) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let target = resolved_id(store, target_id)?;
+    if resolved == target {
+        return Err(WriteError::new("self-relation is not allowed"));
+    }
+    let mut ticket = store
+        .load(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let values = match property {
+        "TKO_DEPS" => &mut ticket.properties.deps,
+        "TKO_LINKS" => &mut ticket.properties.links,
+        _ => return Err(WriteError::new("unknown relation property")),
+    };
+    let changed = mutate_values(values, &target, mutation);
+    store
+        .set_property(&resolved, property, &format_list_value(values))
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(relation_message(
+        kind, mutation, changed, &resolved, &target,
+    ))
+}
+
+fn mutate_link(
+    store: &TicketStore,
+    id: &str,
+    target_id: &str,
+    mutation: Mutation,
+) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let target = resolved_id(store, target_id)?;
+    if resolved == target {
+        return Err(WriteError::new("self-link is not allowed"));
+    }
+    let mut left = store
+        .load(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let mut right = store
+        .load(&target)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let left_changed = mutate_values(&mut left.properties.links, &target, mutation);
+    let right_changed = mutate_values(&mut right.properties.links, &resolved, mutation);
+    store
+        .set_property(
+            &resolved,
+            "TKO_LINKS",
+            &format_list_value(&left.properties.links),
+        )
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    store
+        .set_property(
+            &target,
+            "TKO_LINKS",
+            &format_list_value(&right.properties.links),
+        )
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(relation_message(
+        RelationKind::Link,
+        mutation,
+        left_changed || right_changed,
+        &resolved,
+        &target,
+    ))
+}
+
+fn mutate_tags(
+    store: &TicketStore,
+    id: &str,
+    tags: &[String],
+    mutation: Mutation,
+) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let mut ticket = store
+        .load(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let mut changed = Vec::new();
+    let mut unchanged = Vec::new();
+    for tag in tags {
+        if mutate_values(&mut ticket.properties.tags, tag, mutation) {
+            changed.push(tag.clone());
+        } else {
+            unchanged.push(tag.clone());
+        }
+    }
+    store
+        .set_property(
+            &resolved,
+            "TKO_TAGS",
+            &format_list_value(&ticket.properties.tags),
+        )
+        .map_err(|error| WriteError::new(error.to_string()))?;
+
+    let has_changed = !changed.is_empty();
+    let tags = if has_changed { changed } else { unchanged };
+    let label = tags.join(" ");
+    let message = match mutation {
+        Mutation::Add if has_changed => format!("Added tag(s) to {resolved}: {label}\n"),
+        Mutation::Add => format!("Tag(s) already present on {resolved}: {label}\n"),
+        Mutation::Remove if has_changed => {
+            format!("Removed tag(s) from {resolved}: {label}\n")
+        }
+        Mutation::Remove => format!("Tag(s) not present on {resolved}: {label}\n"),
+    };
+    Ok(message)
+}
+
+fn mutate_values(values: &mut Vec<String>, value: &str, mutation: Mutation) -> bool {
+    match mutation {
+        Mutation::Add => {
+            if values.iter().any(|item| item == value) {
+                false
+            } else {
+                values.push(value.to_string());
+                true
+            }
+        }
+        Mutation::Remove => {
+            let original_len = values.len();
+            values.retain(|item| item != value);
+            values.len() != original_len
+        }
+    }
+}
+
+fn relation_message(
+    kind: RelationKind,
+    mutation: Mutation,
+    changed: bool,
+    id: &str,
+    target: &str,
+) -> String {
+    match (kind, mutation, changed) {
+        (RelationKind::Dependency, Mutation::Add, true) => {
+            format!("Added dependency: {id} -> {target}\n")
+        }
+        (RelationKind::Dependency, Mutation::Add, false) => {
+            format!("Dependency already exists: {id} -> {target}\n")
+        }
+        (RelationKind::Dependency, Mutation::Remove, true) => {
+            format!("Removed dependency: {id} -/-> {target}\n")
+        }
+        (RelationKind::Dependency, Mutation::Remove, false) => {
+            format!("Dependency not present: {id} -/-> {target}\n")
+        }
+        (RelationKind::Link, Mutation::Add, true) => format!("Added link: {id} <-> {target}\n"),
+        (RelationKind::Link, Mutation::Add, false) => {
+            format!("Link already exists: {id} <-> {target}\n")
+        }
+        (RelationKind::Link, Mutation::Remove, true) => {
+            format!("Removed link: {id} <-> {target}\n")
+        }
+        (RelationKind::Link, Mutation::Remove, false) => {
+            format!("Link not present: {id} <-> {target}\n")
+        }
+    }
+}
+
+fn append_note(document: String, note: &str) -> String {
+    let mut lines = split_inclusive_lines(&document);
+    if let Some(notes_index) = lines
+        .iter()
+        .position(|line| trim_line(line).eq_ignore_ascii_case("** Notes"))
+    {
+        let insert_at = lines
+            .iter()
+            .enumerate()
+            .skip(notes_index + 1)
+            .find_map(|(index, line)| {
+                let trimmed = trim_line(line);
+                if trimmed.starts_with("* ") || trimmed.starts_with("** ") {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(lines.len());
+        if insert_at > 0 && !lines[insert_at - 1].ends_with('\n') {
+            lines[insert_at - 1].push('\n');
+        }
+        lines.insert(insert_at, note.to_string());
+        return lines.concat();
+    }
+
+    if !document.ends_with('\n') {
+        lines.push("\n".to_string());
+    }
+    lines.push("\n** Notes\n".to_string());
+    lines.push(note.to_string());
+    lines.concat()
+}
+
+fn split_note_text(text: &str) -> (&str, &str) {
+    match text.split_once('\n') {
+        Some((title, body)) => (title.trim(), body),
+        None => (text.trim(), ""),
+    }
+}
+
+fn push_property(text: &mut String, key: &str, value: &str) {
+    text.push_str(&format!(":{key}: {value}\n"));
+}
+
+fn push_section(text: &mut String, heading: &str, body: Option<&str>) {
+    let Some(body) = body.map(expand_escaped_newlines) else {
+        return;
+    };
+    let body = body.trim();
+    if body.is_empty() {
+        return;
+    }
+    text.push_str(&format!("\n** {heading}\n\n{body}\n"));
+}
+
+fn expand_escaped_newlines(value: &str) -> String {
+    value.replace("\\n", "\n")
+}
+
+fn resolved_id(store: &TicketStore, id: &str) -> Result<String> {
+    let path = store
+        .resolve_id(id)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    file_stem(&path)
+}
+
+fn unique_id(store: &TicketStore, cwd: &Path) -> Result<String> {
+    for _ in 0..128 {
+        let candidate = format!("{}-{}", id_prefix(cwd), id_suffix());
+        if !store
+            .tickets_dir()
+            .join(format!("{candidate}.org"))
+            .exists()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(WriteError::new("failed to generate unique ticket id"))
+}
+
+fn id_prefix(cwd: &Path) -> String {
+    let name = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("tko");
+    let words = name
+        .split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let initials = words
+        .iter()
+        .filter_map(|word| word.chars().next())
+        .collect::<String>();
+    if initials.chars().count() >= 2 {
+        initials
+    } else {
+        name.chars().take(3).collect()
+    }
+}
+
+fn id_suffix() -> String {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut value = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut suffix = String::new();
+    for _ in 0..4 {
+        let index = (value % ALPHABET.len() as u128) as usize;
+        suffix.push(ALPHABET[index] as char);
+        value /= ALPHABET.len() as u128;
+    }
+    suffix
+}
+
+fn git_user_name() -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "user.name"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_status(status: &str) -> Result<()> {
+    if matches!(status, "open" | "in_progress" | "blocked" | "closed") {
+        Ok(())
+    } else {
+        Err(WriteError::new(format!("invalid status: {status}")))
+    }
+}
+
+fn validate_type(ticket_type: &str) -> Result<()> {
+    if matches!(ticket_type, "bug" | "feature" | "task" | "epic" | "chore") {
+        Ok(())
+    } else {
+        Err(WriteError::new(format!("invalid type: {ticket_type}")))
+    }
+}
+
+fn validate_priority(priority: u8) -> Result<()> {
+    if priority <= 4 {
+        Ok(())
+    } else {
+        Err(WriteError::new(format!("invalid priority: {priority}")))
+    }
+}
+
+fn file_stem(path: &Path) -> Result<String> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| WriteError::new(format!("ticket path has no file stem: {}", path.display())))
+}
+
+fn split_inclusive_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split_inclusive('\n').map(ToOwned::to_owned).collect()
+    }
+}
+
+fn trim_line(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+#+end_src
+
 ** CLI Surface
 :PROPERTIES:
 :CUSTOM_ID: cli-surface
@@ -1427,10 +1967,11 @@ work.
 
 use crate::read::Filters;
 use crate::storage::{TicketStore, migrate_legacy_properties};
+use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::env;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -1498,7 +2039,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct CreateArgs {
-    title: Option<String>,
+    title: Vec<String>,
     #[arg(short = 'd', long)]
     description: Option<String>,
     #[arg(long)]
@@ -1646,6 +2187,77 @@ where
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
         Some(Command::MigrateLegacyProperties(args)) => run_migration(args),
+        Some(Command::Create(args)) => {
+            let cwd = env::current_dir().map_err(|error| error.to_string())?;
+            let store = write_store(true)?;
+            let id = crate::write::create(&store, &cwd, create_ticket(args))
+                .map_err(|error| error.to_string())?;
+            println!("{id}");
+            Ok(())
+        }
+        Some(Command::Status(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            &args.status,
+        )),
+        Some(Command::Start(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "in_progress",
+        )),
+        Some(Command::Block(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "blocked",
+        )),
+        Some(Command::Close(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "closed",
+        )),
+        Some(Command::Reopen(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "open",
+        )),
+        Some(Command::Dep(args)) => print_write(crate::write::add_dependency(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Undep(args)) => print_write(crate::write::remove_dependency(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Link(args)) => print_write(crate::write::add_link(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Unlink(args)) => print_write(crate::write::remove_link(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Tag(args)) => print_write(crate::write::add_tags(
+            &write_store(false)?,
+            &args.id,
+            &args.tags,
+        )),
+        Some(Command::Untag(args)) => print_write(crate::write::remove_tags(
+            &write_store(false)?,
+            &args.id,
+            &args.tags,
+        )),
+        Some(Command::AddNote(args)) => {
+            let text = note_text(&args)?;
+            print_write(crate::write::add_note(
+                &write_store(false)?,
+                &args.id,
+                &text,
+            ))
+        }
         Some(Command::Ready(args)) => {
             print_read(crate::read::ready(&read_store()?, &filters(args, None)?))
         }
@@ -1687,6 +2299,57 @@ fn read_store() -> Result<TicketStore, String> {
         .map_err(|error| error.to_string())
 }
 
+fn write_store(create_if_missing: bool) -> Result<TicketStore, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
+    TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), create_if_missing)
+        .map_err(|error| error.to_string())
+}
+
+fn create_ticket(args: CreateArgs) -> CreateTicket {
+    CreateTicket {
+        title: args
+            .title
+            .last()
+            .cloned()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Untitled".to_string()),
+        description: args.description,
+        scope: args.scope,
+        design: args.design,
+        acceptance: args.acceptance,
+        ticket_type: args.ticket_type.unwrap_or_else(|| "task".to_string()),
+        priority: args.priority.unwrap_or(2),
+        assignee: args.assignee,
+        external_ref: args.external_ref,
+        parent: args.parent,
+        tags: split_tags(args.tags),
+    }
+}
+
+fn split_tags(tags: Option<String>) -> Vec<String> {
+    tags.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn note_text(args: &AddNoteArgs) -> Result<String, String> {
+    if !args.text.is_empty() {
+        Ok(args.text.join(" "))
+    } else if !io::stdin().is_terminal() {
+        let mut text = String::new();
+        io::stdin()
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        Ok(text)
+    } else {
+        Ok(String::new())
+    }
+}
+
 fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
     Ok(Filters {
         status,
@@ -1696,6 +2359,12 @@ fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> 
 }
 
 fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
+    Ok(())
+}
+
+fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
@@ -1838,19 +2507,6 @@ fn help_command_prints_help() {
 #[test]
 fn known_commands_parse_but_remain_stubbed() {
     let cases: &[(&[&str], &str)] = &[
-        (&["create", "Ticket title", "--tags", "repo/tko"], "create"),
-        (&["start", "sys-ywp7"], "start"),
-        (&["block", "sys-ywp7"], "block"),
-        (&["close", "sys-ywp7"], "close"),
-        (&["reopen", "sys-ywp7"], "reopen"),
-        (&["status", "sys-ywp7", "open"], "status"),
-        (&["dep", "sys-rer6", "sys-ywp7"], "dep"),
-        (&["undep", "sys-rer6", "sys-ywp7"], "undep"),
-        (&["link", "sys-ywp7", "sys-rer6"], "link"),
-        (&["unlink", "sys-ywp7", "sys-rer6"], "unlink"),
-        (&["tag", "sys-ywp7", "repo/tko"], "tag"),
-        (&["untag", "sys-ywp7", "repo/tko"], "untag"),
-        (&["add-note", "sys-ywp7", "Title"], "add-note"),
         (&["lint", "sys-ywp7"], "lint"),
         (&["notes", "sys-ywp7"], "notes"),
     ];
@@ -2308,5 +2964,241 @@ fn ids(output: &str) -> Vec<String> {
         .map(|line| serde_json::from_str::<Value>(line).expect("json row"))
         .map(|row| row["id"].as_str().expect("id").to_string())
         .collect()
+}
+#+end_src
+
+#+begin_src rust :tangle tests/write.rs
+// Generated from tko.org. Do not edit by hand.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use tempfile::TempDir;
+
+fn tko_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_tko")
+}
+
+struct Fixture {
+    temp: TempDir,
+    tickets_dir: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tickets_dir = temp.path().join(".tickets");
+        std::fs::create_dir(&tickets_dir).expect("tickets dir");
+        write_ticket(
+            &tickets_dir,
+            "sys-a",
+            ":PROPERTIES:\n:TKO_ID: sys-a\n:TKO_STATUS: open\n:TKO_DEPS: []\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T10:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 2\n:TKO_TAGS: []\n:END:\n\n* Alpha\n",
+        );
+        write_ticket(
+            &tickets_dir,
+            "sys-b",
+            ":PROPERTIES:\n:TKO_ID: sys-b\n:TKO_STATUS: open\n:TKO_DEPS: []\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T11:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 2\n:TKO_TAGS: []\n:END:\n\n* Bravo\n",
+        );
+        Self { temp, tickets_dir }
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        Command::new(tko_bin())
+            .args(args)
+            .env("TICKETS_DIR", &self.tickets_dir)
+            .current_dir(self.temp.path())
+            .output()
+            .expect("tko command should run")
+    }
+
+    fn stdout(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("utf8 stdout")
+    }
+
+    fn read(&self, id: &str) -> String {
+        std::fs::read_to_string(self.tickets_dir.join(format!("{id}.org"))).expect("read ticket")
+    }
+}
+
+fn write_ticket(tickets_dir: &Path, id: &str, text: &str) {
+    std::fs::write(tickets_dir.join(format!("{id}.org")), text).expect("write ticket");
+}
+
+#[test]
+fn create_writes_tko_properties_sections_and_parent_resolution() {
+    let fixture = Fixture::new();
+
+    let id = fixture.stdout(&[
+        "create",
+        "Ignored",
+        "Created ticket",
+        "--description",
+        "Line one\\nLine two",
+        "--scope",
+        "Small",
+        "--type",
+        "feature",
+        "--priority",
+        "1",
+        "--assignee",
+        "rosin",
+        "--external-ref",
+        "gh-123",
+        "--parent",
+        "sys-a",
+        "--tags",
+        "repo/tko, tooling,,",
+    ]);
+    let id = id.trim();
+    let text = fixture.read(id);
+
+    assert!(text.contains(":TKO_ID: "));
+    assert!(text.contains(":TKO_STATUS: open"));
+    assert!(text.contains(":TKO_DEPS: []"));
+    assert!(text.contains(":TKO_LINKS: []"));
+    assert!(text.contains(":TKO_TYPE: feature"));
+    assert!(text.contains(":TKO_PRIORITY: 1"));
+    assert!(text.contains(":TKO_ASSIGNEE: rosin"));
+    assert!(text.contains(":TKO_EXTERNAL_REF: gh-123"));
+    assert!(text.contains(":TKO_PARENT: sys-a"));
+    assert!(text.contains(":TKO_TAGS: [repo/tko, tooling]"));
+    assert!(text.contains("* Created ticket\n"));
+    assert!(text.contains("** Description\n\nLine one\nLine two\n"));
+    assert!(text.contains("** Scope\n\nSmall\n"));
+    assert!(!text.contains(":TK_"));
+}
+
+#[test]
+fn status_aliases_update_tko_status() {
+    let fixture = Fixture::new();
+
+    assert_eq!(
+        fixture.stdout(&["start", "sys-a"]),
+        "Updated sys-a -> in_progress\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_STATUS: in_progress"));
+    assert_eq!(
+        fixture.stdout(&["block", "sys-a"]),
+        "Updated sys-a -> blocked\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_STATUS: blocked"));
+    assert_eq!(
+        fixture.stdout(&["close", "sys-a"]),
+        "Updated sys-a -> closed\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_STATUS: closed"));
+    assert_eq!(
+        fixture.stdout(&["reopen", "sys-a"]),
+        "Updated sys-a -> open\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_STATUS: open"));
+}
+
+#[test]
+fn deps_preserve_order_and_avoid_duplicates() {
+    let fixture = Fixture::new();
+
+    assert_eq!(
+        fixture.stdout(&["dep", "sys-a", "sys-b"]),
+        "Added dependency: sys-a -> sys-b\n"
+    );
+    assert_eq!(
+        fixture.stdout(&["dep", "sys-a", "sys-b"]),
+        "Dependency already exists: sys-a -> sys-b\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_DEPS: [sys-b]"));
+    assert_eq!(
+        fixture.stdout(&["undep", "sys-a", "sys-b"]),
+        "Removed dependency: sys-a -/-> sys-b\n"
+    );
+    assert_eq!(
+        fixture.stdout(&["undep", "sys-a", "sys-b"]),
+        "Dependency not present: sys-a -/-> sys-b\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_DEPS: []"));
+}
+
+#[test]
+fn links_are_symmetric_and_deduplicated() {
+    let fixture = Fixture::new();
+
+    assert_eq!(
+        fixture.stdout(&["link", "sys-a", "sys-b"]),
+        "Added link: sys-a <-> sys-b\n"
+    );
+    assert_eq!(
+        fixture.stdout(&["link", "sys-a", "sys-b"]),
+        "Link already exists: sys-a <-> sys-b\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_LINKS: [sys-b]"));
+    assert!(fixture.read("sys-b").contains(":TKO_LINKS: [sys-a]"));
+    assert_eq!(
+        fixture.stdout(&["unlink", "sys-a", "sys-b"]),
+        "Removed link: sys-a <-> sys-b\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_LINKS: []"));
+    assert!(fixture.read("sys-b").contains(":TKO_LINKS: []"));
+}
+
+#[test]
+fn tags_preserve_order_and_avoid_duplicates() {
+    let fixture = Fixture::new();
+
+    assert_eq!(
+        fixture.stdout(&["tag", "sys-a", "repo/tko", "tooling"]),
+        "Added tag(s) to sys-a: repo/tko tooling\n"
+    );
+    assert_eq!(
+        fixture.stdout(&["tag", "sys-a", "repo/tko"]),
+        "Tag(s) already present on sys-a: repo/tko\n"
+    );
+    assert!(
+        fixture
+            .read("sys-a")
+            .contains(":TKO_TAGS: [repo/tko, tooling]")
+    );
+    assert_eq!(
+        fixture.stdout(&["untag", "sys-a", "repo/tko"]),
+        "Removed tag(s) from sys-a: repo/tko\n"
+    );
+    assert!(fixture.read("sys-a").contains(":TKO_TAGS: [tooling]"));
+}
+
+#[test]
+fn add_note_creates_level_two_notes_and_level_three_entries() {
+    let fixture = Fixture::new();
+
+    assert_eq!(
+        fixture.stdout(&["add-note", "sys-a", "Title line\\nBody line"]),
+        "Note added to sys-a\n"
+    );
+    let text = fixture.read("sys-a");
+    assert!(text.contains("** Notes\n*** ["));
+    assert!(text.contains("] Title line\nBody line\n"));
+
+    let mut child = Command::new(tko_bin())
+        .args(["add-note", "sys-a"])
+        .env("TICKETS_DIR", &fixture.tickets_dir)
+        .current_dir(fixture.temp.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn tko");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("stdin");
+        stdin
+            .write_all(b"Piped title\nPiped body\n")
+            .expect("write stdin");
+    }
+    let output = child.wait_with_output().expect("wait");
+    assert!(output.status.success());
+    let text = fixture.read("sys-a");
+    assert!(text.contains("] Piped title\nPiped body\n"));
 }
 #+end_src
