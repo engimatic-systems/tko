@@ -498,6 +498,7 @@ Usage:
 ```text
 tko show [--full] <id>
 tko show [-f] <id>
+tko show <id> --note <match>
 ```
 
 Metadata header:
@@ -521,6 +522,19 @@ After a blank line:
 - without `--full`, print body headings only
 - with `--full`, print full body
 
+With `--note <match>`, print exactly one matching note subtree from the
+semantic `** Notes` section.
+
+`--note` matching:
+
+- Searches direct `***` note entries under `** Notes`.
+- Matches note title text case-insensitively.
+- Also matches the timestamp text inside the leading note timestamp when
+  `<match>` is contained in it.
+- If exactly one note matches, prints that note subtree only.
+- If more than one note matches, fails and lists candidate note headings.
+- If no note matches, fails with a not-found error.
+
 If stdout is a TTY and `TICKET_PAGER` or `PAGER` is set, output is piped through
 that pager.
 
@@ -529,6 +543,7 @@ Compatibility:
 - The pager command is split on shell words by Bash `read -a`; shell quoting is
   not interpreted.
 - `--full` and `-f` may appear before the ID.
+- `--note` is not implemented in the Bash tool.
 
 ### `add-note`
 
@@ -574,6 +589,36 @@ Compatibility: the Bash implementation accepts long first lines and may match a
 `Notes` heading at any level. The Rust target is stricter: `Notes` is always
 `** Notes`, and note entries are always `***`.
 
+### `notes`
+
+Usage:
+
+```text
+tko notes <id>
+```
+
+Lists note headings under the semantic `** Notes` heading without printing note
+bodies.
+
+Behavior:
+
+- Resolves `<id>` through normal ticket resolution.
+- Finds only a level-2 semantic `** Notes` heading.
+- Lists direct level-3 note entries in document order.
+- Prints one note entry per line.
+- Includes the note timestamp and title text when present.
+- Handles timestamp-only notes without treating the timestamp as title text.
+- Handles a missing `** Notes` section successfully by printing no note entries.
+
+Output:
+
+```text
+[2026-06-11 Thu 18:20Z] Title line
+[2026-06-11 Thu 18:25Z]
+```
+
+Compatibility: this command is not implemented in the Bash tool.
+
 ### `query`
 
 Usage:
@@ -594,7 +639,7 @@ Default fields:
   "links": [],
   "created": "2026-06-11T18:20:12Z",
   "type": "task",
-  "priority": "2",
+  "priority": 2,
   "tags": []
 }
 ```
@@ -763,51 +808,3 @@ Current implementation depends on common Unix tools:
 
 A rewrite should not require these tools for core behavior. Query filtering
 uses the native typed predicate DSL.
-
-## Planned Extensions
-
-These features are planned and should be added to the spec when implemented.
-
-### Note Table of Contents
-
-Planned command:
-
-```text
-tko notes <id>
-```
-
-Expected behavior:
-
-- list each Notes-section entry in document order
-- print timestamp and title on one line
-- do not print note bodies
-- handle missing Notes sections
-- mark timestamp-only notes clearly
-
-### Note Title Length Enforcement
-
-Planned lint code:
-
-- `L003`
-
-Expected behavior:
-
-- warn when note title text after timestamp exceeds 50 characters
-- fail when note title text after timestamp exceeds 72 characters
-- treat overflow prose as body material, not heading material
-- enforce the hard limit in both `lint` and `add-note`
-
-### Selective Note Fetch
-
-Planned command shape:
-
-```text
-tko show <id> --note <match>
-```
-
-Expected behavior:
-
-- match note title case-insensitively
-- timestamp matching is allowed if specified by final design
-- print exactly one matching note subtree
-- if ambiguous, list candidates rather than printing all bodies
