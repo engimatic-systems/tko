@@ -40,19 +40,6 @@ fn help_command_prints_help() {
 #[test]
 fn known_commands_parse_but_remain_stubbed() {
     let cases: &[(&[&str], &str)] = &[
-        (&["create", "Ticket title", "--tags", "repo/tko"], "create"),
-        (&["start", "sys-ywp7"], "start"),
-        (&["block", "sys-ywp7"], "block"),
-        (&["close", "sys-ywp7"], "close"),
-        (&["reopen", "sys-ywp7"], "reopen"),
-        (&["status", "sys-ywp7", "open"], "status"),
-        (&["dep", "sys-rer6", "sys-ywp7"], "dep"),
-        (&["undep", "sys-rer6", "sys-ywp7"], "undep"),
-        (&["link", "sys-ywp7", "sys-rer6"], "link"),
-        (&["unlink", "sys-ywp7", "sys-rer6"], "unlink"),
-        (&["tag", "sys-ywp7", "repo/tko"], "tag"),
-        (&["untag", "sys-ywp7", "repo/tko"], "untag"),
-        (&["add-note", "sys-ywp7", "Title"], "add-note"),
         (&["lint", "sys-ywp7"], "lint"),
         (&["notes", "sys-ywp7"], "notes"),
     ];
