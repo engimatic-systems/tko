@@ -116,8 +116,8 @@ Migration behavior:
 - Support dry-run/report mode.
 
 This migration path is separate from normal command parsing. After migration,
-legacy `TK_*` keys should be lint failures if they remain in the active property
-drawer. Exact lint code is not assigned yet.
+legacy `TK_*` keys are `L004` lint failures if they remain in the active
+property drawer.
 
 ## IDs
 
@@ -713,10 +713,14 @@ Current lint codes:
 Planned lint codes:
 
 - `L003 note title exceeds length target or hard limit`
+- `L004 legacy TK_* property key remains after migration`
 
 `L003` should warn above 50 characters and fail above 72 characters for note
 title text after the timestamp. `add-note` should enforce the same hard limit at
 write time.
+
+`L004` fails when a known legacy `TK_*` property key remains in the active
+property drawer after migration.
 
 Output format:
 
