@@ -1,8 +1,8 @@
 # tko Specification
 
-This document describes `tko` as it exists today. It is the compatibility target
-for a systems-language rewrite unless a behavior is explicitly marked planned or
-deprecated here.
+This document describes current `tko` behavior and the near-term compatibility
+target for a systems-language rewrite. Behaviors marked Compatibility describe
+the Bash implementation. Behaviors marked Stable describe the rewrite contract.
 
 `tko` is a minimal ticket tracker backed by one Org file per ticket. It stores
 ticket metadata in Org property drawers and ticket content in Org headings.
@@ -38,19 +38,21 @@ Compatibility: the missing-directory error still says `tk create`.
 
 Each ticket is stored as:
 
+Canonical target format:
+
 ```org
 :PROPERTIES:
-:TK_ID: pla-abcd
-:TK_STATUS: open
-:TK_DEPS: []
-:TK_LINKS: []
-:TK_CREATED: 2026-06-11T18:20:12Z
-:TK_TYPE: task
-:TK_PRIORITY: 2
-:TK_ASSIGNEE: rosin
-:TK_EXTERNAL_REF: gh-123
-:TK_PARENT: pla-parent
-:TK_TAGS: [repo/tko, tooling]
+:TKO_ID: pla-abcd
+:TKO_STATUS: open
+:TKO_DEPS: []
+:TKO_LINKS: []
+:TKO_CREATED: 2026-06-11T18:20:12Z
+:TKO_TYPE: task
+:TKO_PRIORITY: 2
+:TKO_ASSIGNEE: rosin
+:TKO_EXTERNAL_REF: gh-123
+:TKO_PARENT: pla-parent
+:TKO_TAGS: [repo/tko, tooling]
 :END:
 
 * Ticket title
@@ -62,17 +64,20 @@ Body text.
 
 Stable properties:
 
-- `TK_ID`
-- `TK_STATUS`
-- `TK_DEPS`
-- `TK_LINKS`
-- `TK_CREATED`
-- `TK_TYPE`
-- `TK_PRIORITY`
-- `TK_ASSIGNEE`
-- `TK_EXTERNAL_REF`
-- `TK_PARENT`
-- `TK_TAGS`
+- `TKO_ID`
+- `TKO_STATUS`
+- `TKO_DEPS`
+- `TKO_LINKS`
+- `TKO_CREATED`
+- `TKO_TYPE`
+- `TKO_PRIORITY`
+- `TKO_ASSIGNEE`
+- `TKO_EXTERNAL_REF`
+- `TKO_PARENT`
+- `TKO_TAGS`
+
+Strict rule: normal `tko` commands read and write `TKO_*` keys only. Legacy
+`TK_*` keys are not part of the Rust command contract.
 
 List properties use bracketed comma-separated text:
 
@@ -85,10 +90,34 @@ List properties use bracketed comma-separated text:
 They are not JSON in the Org file. The `query` command converts them to JSON
 arrays.
 
-If `TK_ID` is missing, the filename stem is the ticket ID.
+If `TKO_ID` is missing, the filename stem is the ticket ID.
 
 If a property drawer is missing during a property update, one is inserted at the
 top of the file.
+
+## Legacy Property Migration
+
+The Rust train should include a small migration script or command that converts
+legacy Bash `TK_*` properties to canonical `TKO_*` properties in existing
+tickets.
+
+Migration behavior:
+
+- Operate on `.tickets/*.org` by default, with an option to target one file or
+  ticket ID.
+- Rename known `TK_*` keys to their `TKO_*` equivalents.
+- Preserve property order, values, ticket body text, and newline style as much as
+  practical.
+- If only `TK_*` exists, replace it with `TKO_*`.
+- If both `TKO_*` and `TK_*` exist for the same field and values match, remove
+  the legacy `TK_*`.
+- If both exist and values differ, keep both and report a conflict rather than
+  guessing.
+- Support dry-run/report mode.
+
+This migration path is separate from normal command parsing. After migration,
+legacy `TK_*` keys should be lint failures if they remain in the active property
+drawer. Exact lint code is not assigned yet.
 
 ## IDs
 
@@ -122,8 +151,10 @@ Commands that accept a ticket ID resolve it as follows:
 4. If more than one file matches, fail with an ambiguous-ID error.
 5. If none match, fail with a not-found error.
 
+Stable: partial ID matching uses filename stems.
+
 Compatibility: substring resolution is case-sensitive and uses filenames, not
-`TK_ID` property values.
+`TKO_ID` property values.
 
 ## Status, Type, and Priority
 
@@ -235,7 +266,7 @@ Behavior:
   filename stem.
 - Converts escaped `\n` sequences in section options into real newlines.
 - Writes only non-empty optional section bodies.
-- Writes `TK_TAGS` only when at least one tag is provided.
+- Writes `TKO_TAGS` only when at least one tag is provided.
 
 Compatibility:
 
@@ -251,7 +282,7 @@ Usage:
 tko status <id> <status>
 ```
 
-Sets `TK_STATUS` and prints:
+Sets `TKO_STATUS` and prints:
 
 ```text
 Updated <id> -> <status>
@@ -283,7 +314,7 @@ Behavior:
 
 - Resolve both IDs.
 - Reject self-dependencies.
-- Add or remove the dependency in `TK_DEPS`.
+- Add or remove the dependency in `TKO_DEPS`.
 - Preserve list order.
 - Do not duplicate existing entries.
 
@@ -309,7 +340,7 @@ Behavior:
 
 - Resolve both IDs.
 - Reject self-links.
-- Add or remove each ticket ID from the other's `TK_LINKS`.
+- Add or remove each ticket ID from the other's `TKO_LINKS`.
 - Preserve list order.
 - Do not duplicate existing entries.
 
@@ -333,7 +364,7 @@ tko untag <id> <tag> [tag...]
 
 Behavior:
 
-- Add or remove tags from `TK_TAGS`.
+- Add or remove tags from `TKO_TAGS`.
 - Preserve list order.
 - Do not duplicate existing entries.
 
@@ -352,6 +383,8 @@ Usage:
 
 ```text
 tko ready [-a <assignee>] [-T <tag>]
+tko ready [--assignee <assignee>] [--tag <tag>]
+tko ready [--assignee=<assignee>] [--tag=<tag>]
 ```
 
 Lists open or in-progress tickets whose dependencies are all closed.
@@ -365,11 +398,26 @@ Output is sorted by priority, then ID:
 Filters:
 
 - `-a <assignee>`
+- `--assignee <assignee>`
 - `--assignee=<assignee>`
 - `-T <tag>`
+- `--tag <tag>`
 - `--tag=<tag>`
 
-Compatibility: unknown arguments are ignored.
+Filter matching:
+
+- Assignee matching is exact string equality against `TKO_ASSIGNEE`.
+- Tag matching is exact string equality against one item in `TKO_TAGS`.
+- Repeating the same filter is a usage error until multi-value semantics are
+  explicitly designed.
+
+Stable argument contract:
+
+- Unknown flags are usage errors.
+- Unexpected positional arguments are usage errors.
+- Options that require values fail when the value is missing.
+
+Compatibility: the Bash implementation ignores unknown arguments for `ready`.
 
 ### `blocked`
 
@@ -377,6 +425,8 @@ Usage:
 
 ```text
 tko blocked [-a <assignee>] [-T <tag>]
+tko blocked [--assignee <assignee>] [--tag <tag>]
+tko blocked [--assignee=<assignee>] [--tag=<tag>]
 ```
 
 Lists open or in-progress tickets with at least one dependency whose status is
@@ -388,7 +438,7 @@ Output is sorted by priority, then ID:
 <id padded to 8> [P<priority>][<status>] - <title> <- [dep-a, dep-b]
 ```
 
-Filters match `ready`.
+Filters and argument handling match `ready`.
 
 Compatibility: dependencies missing from the current ticket index count as
 unresolved.
@@ -398,8 +448,10 @@ unresolved.
 Usage:
 
 ```text
-tko list [--status=<status>] [-a <assignee>] [-T <tag>]
-tko ls [--status=<status>] [-a <assignee>] [-T <tag>]
+tko list [--status <status>] [-a <assignee>] [-T <tag>]
+tko list [--status=<status>] [--assignee=<assignee>] [--tag=<tag>]
+tko ls [--status <status>] [-a <assignee>] [-T <tag>]
+tko ls [--status=<status>] [--assignee=<assignee>] [--tag=<tag>]
 ```
 
 Lists tickets in filename sort order.
@@ -413,13 +465,31 @@ Output:
 
 Filters:
 
+- `--status <status>`
 - `--status=<status>`
 - `-a <assignee>`
+- `--assignee <assignee>`
 - `--assignee=<assignee>`
 - `-T <tag>`
+- `--tag <tag>`
 - `--tag=<tag>`
 
-Compatibility: unknown arguments are ignored.
+Filter matching:
+
+- Status matching is exact string equality after validating the supplied status.
+- Assignee matching is exact string equality against `TKO_ASSIGNEE`.
+- Tag matching is exact string equality against one item in `TKO_TAGS`.
+- Repeating the same filter is a usage error until multi-value semantics are
+  explicitly designed.
+
+Stable argument contract:
+
+- Unknown flags are usage errors.
+- Unexpected positional arguments are usage errors.
+- Options that require values fail when the value is missing.
+
+Compatibility: the Bash implementation ignores unknown arguments for `list` and
+`ls`.
 
 ### `show`
 
@@ -476,10 +546,14 @@ Behavior:
 - Splits note text at the first newline.
 - Uses the first line as the note heading text.
 - Uses the remaining lines as note body.
-- Appends the note under the semantic `Notes` heading if one exists.
-- If no `Notes` heading exists, inserts `** Notes` after the first top-level
+- Appends the note under the semantic `** Notes` heading if one exists.
+- If no `** Notes` heading exists, inserts `** Notes` after the first top-level
   ticket subtree.
-- If no top-level heading exists, appends `* Notes` at EOF.
+- Individual note entries are always `***` headings.
+- Note title enforcement applies before writing:
+  - title text after the timestamp should be at most 50 characters
+  - title text after the timestamp must be at most 72 characters
+  - title prose beyond the limit belongs in the note body
 
 Note heading format:
 
@@ -496,11 +570,9 @@ Output:
 Note added to <id>
 ```
 
-Compatibility:
-
-- Existing `Notes` heading lookup is case-insensitive and may match any Org
-  heading level. New note entries are always inserted as `***`.
-- Long first lines are currently accepted as full note heading text.
+Compatibility: the Bash implementation accepts long first lines and may match a
+`Notes` heading at any level. The Rust target is stricter: `Notes` is always
+`** Notes`, and note entries are always `***`.
 
 ### `query`
 
@@ -533,7 +605,14 @@ Optional fields appear only when non-empty:
 - `external-ref`
 - `parent`
 
-If a filter is provided, `query` pipes all objects through `jq -c <filter>`.
+Current Bash behavior: if a filter is provided, `query` pipes all objects
+through `jq -c <filter>`.
+
+Rust target: undecided. The Bash `jq` hook was cheap glue and contributes to
+poor performance on commands that repeatedly materialize ticket JSON. The Rust
+implementation may keep jq compatibility, provide a native query language, or
+split those into separate modes. Do not freeze this interface without a focused
+decision.
 
 Compatibility:
 
@@ -558,6 +637,14 @@ Current lint codes:
 
 - `L001 duplicate semantic heading: <heading>`
 - `L002 semantic heading must be level-2 (**): <heading>`
+
+Planned lint codes:
+
+- `L003 note title exceeds length target or hard limit`
+
+`L003` should warn above 50 characters and fail above 72 characters for note
+title text after the timestamp. `add-note` should enforce the same hard limit at
+write time.
 
 Output format:
 
@@ -598,9 +685,8 @@ Current implementation depends on common Unix tools:
 - jq for `query`
 - rg or grep for internal property update checks
 
-A rewrite should not require these tools for core behavior, except where the
-command contract explicitly calls out external behavior such as `query`'s jq
-filter language.
+A rewrite should not require these tools for core behavior. Query filtering is
+still an open design question; do not preserve a jq dependency by accident.
 
 ## Planned Extensions
 
@@ -622,7 +708,7 @@ Expected behavior:
 - handle missing Notes sections
 - mark timestamp-only notes clearly
 
-### Note Title Length Lint
+### Note Title Length Enforcement
 
 Planned lint code:
 
@@ -633,6 +719,7 @@ Expected behavior:
 - warn when note title text after timestamp exceeds 50 characters
 - fail when note title text after timestamp exceeds 72 characters
 - treat overflow prose as body material, not heading material
+- enforce the hard limit in both `lint` and `add-note`
 
 ### Selective Note Fetch
 
@@ -649,15 +736,9 @@ Expected behavior:
 - print exactly one matching note subtree
 - if ambiguous, list candidates rather than printing all bodies
 
-## Deliberate Rewrite Questions
+## Open Design Questions
 
-Open questions before freezing a Rust implementation:
+Open questions before freezing the Rust implementation:
 
-- Should partial ID matching continue to use filename stems only?
-- Should unknown `ready`, `blocked`, and `list` arguments remain ignored?
 - Should `query` keep embedding jq semantics, or should jq become an optional
-  compatibility mode?
-- Should note title length enforcement be warning/failure output in `lint`, in
-  `add-note`, or both?
-- Should note insertion preserve `Notes` heading depth by using child level
-  `notes_level + 1` instead of always `***`?
+  compatibility mode, or should it be replaced by a native query surface?
