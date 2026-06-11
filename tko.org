@@ -320,7 +320,14 @@ impl TicketStore {
         let mut paths = Vec::new();
         for entry in fs::read_dir(&self.tickets_dir)? {
             let path = entry?.path();
-            if path.extension().is_some_and(|extension| extension == "org") {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+            if path.is_file() && path.extension().is_some_and(|extension| extension == "org") {
                 paths.push(path);
             }
         }
@@ -3170,6 +3177,23 @@ fn resolves_ticket_ids_by_filename_stem() {
 
     let missing = store.resolve_id("none").expect_err("missing");
     assert!(matches!(missing, StorageError::TicketNotFound(_)));
+}
+
+#[test]
+fn ignores_hidden_org_lockfiles_in_ticket_iteration() {
+    let temp = tempdir().expect("tempdir");
+    let tickets = temp.path().join(".tickets");
+    fs::create_dir(&tickets).expect("tickets dir");
+    write(&tickets.join("sys-real.org"), "* Real\n");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("missing-lock-target", tickets.join(".#sys-real.org"))
+        .expect("lock symlink");
+
+    let store = TicketStore::new(&tickets);
+    let paths = store.ticket_paths().expect("ticket paths");
+
+    assert_eq!(paths, [tickets.join("sys-real.org")]);
+    assert_eq!(store.load("real").expect("load real").title, "Real");
 }
 
 #[test]
