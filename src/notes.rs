@@ -87,19 +87,9 @@ fn note_entries(body: &str) -> Vec<NoteEntry<'_>> {
         return Vec::new();
     };
 
-    let notes_end = lines
-        .iter()
-        .enumerate()
-        .skip(notes_index + 1)
-        .find_map(|(index, line)| match heading(line.text) {
-            Some((level, _)) if level <= 2 => Some(index),
-            _ => None,
-        })
-        .unwrap_or(lines.len());
-
     let mut entries = Vec::new();
     let mut index = notes_index + 1;
-    while index < notes_end {
+    while index < lines.len() {
         let Some((3, heading_text)) = heading(lines[index].text) else {
             index += 1;
             continue;
@@ -108,13 +98,12 @@ fn note_entries(body: &str) -> Vec<NoteEntry<'_>> {
         let end = lines
             .iter()
             .enumerate()
-            .take(notes_end)
             .skip(index + 1)
             .find_map(|(candidate, line)| match heading(line.text) {
                 Some((level, _)) if level <= 3 => Some(candidate),
                 _ => None,
             })
-            .unwrap_or(notes_end);
+            .unwrap_or(lines.len());
         let subtree = &body[lines[start].start..lines[end - 1].end];
         let (timestamp, title) = split_timestamp_title(heading_text);
         entries.push(NoteEntry {
