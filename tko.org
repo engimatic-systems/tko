@@ -82,10 +82,12 @@ tempfile = "3.23"
 :CUSTOM_ID: check-surface
 :END:
 
-The Makefile is the local verification and install surface.
+The Makefile is the local verification and install surface. Ordinary source
+consumers can build and test from committed generated files without Emacs.
 
-- =check= tangles from =tko.org=, requires generated files to be clean, then
-  runs the Rust test suite.
+- =check= runs the Rust test suite from committed source.
+- =tangle-check= tangles from =tko.org=, requires generated files to be clean,
+  then runs =check=.
 - =install= runs =check= before installing this checkout with =cargo install
   --path .=.
 - =install-smoke= installs into a temporary root and verifies the installed
@@ -105,13 +107,16 @@ CARGO_INSTALL_FLAGS ?= --locked
 
 TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
 
-.PHONY: tangle check test install install-smoke
+.PHONY: tangle tangle-check check test install install-smoke
 
 tangle:
 	$(EMACS) --batch --eval "(progn (require 'org) (require 'ob-tangle) (setq org-confirm-babel-evaluate nil) (org-babel-tangle-file \"tko.org\"))"
 
-check: tangle
+tangle-check: tangle
 	git diff --exit-code -- $(TANGLE_OUTPUTS)
+	$(MAKE) check
+
+check:
 	$(CARGO) test
 
 test:
