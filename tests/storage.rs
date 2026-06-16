@@ -108,6 +108,23 @@ fn resolves_ticket_ids_by_filename_stem() {
 }
 
 #[test]
+fn ignores_hidden_org_lockfiles_in_ticket_iteration() {
+    let temp = tempdir().expect("tempdir");
+    let tickets = temp.path().join(".tickets");
+    fs::create_dir(&tickets).expect("tickets dir");
+    write(&tickets.join("sys-real.org"), "* Real\n");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("missing-lock-target", tickets.join(".#sys-real.org"))
+        .expect("lock symlink");
+
+    let store = TicketStore::new(&tickets);
+    let paths = store.ticket_paths().expect("ticket paths");
+
+    assert_eq!(paths, [tickets.join("sys-real.org")]);
+    assert_eq!(store.load("real").expect("load real").title, "Real");
+}
+
+#[test]
 fn updates_existing_properties_and_inserts_missing_drawer() {
     let temp = tempdir().expect("tempdir");
     let tickets = temp.path().join(".tickets");

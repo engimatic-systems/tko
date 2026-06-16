@@ -124,7 +124,14 @@ impl TicketStore {
         let mut paths = Vec::new();
         for entry in fs::read_dir(&self.tickets_dir)? {
             let path = entry?.path();
-            if path.extension().is_some_and(|extension| extension == "org") {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+            if path.is_file() && path.extension().is_some_and(|extension| extension == "org") {
                 paths.push(path);
             }
         }
