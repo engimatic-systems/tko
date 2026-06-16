@@ -1,9 +1,9 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::read::Filters;
+use crate::read::{Filters, OutputMode};
 use crate::storage::TicketStore;
 use crate::write::CreateTicket;
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read};
@@ -50,9 +50,9 @@ enum Command {
     /// Remove tag(s) from a ticket.
     Untag(TagsArgs),
     /// List open or in-progress tickets with deps resolved.
-    Ready(FilterArgs),
+    Ready(ReadArgs),
     /// List open or in-progress tickets with unresolved deps.
-    Blocked(FilterArgs),
+    Blocked(ReadArgs),
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
@@ -127,11 +127,21 @@ struct FilterArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReadArgs {
+    #[command(flatten)]
+    filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
+}
+
+#[derive(Debug, Args)]
 struct ListArgs {
     #[arg(long)]
     status: Option<String>,
     #[command(flatten)]
     filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
 }
 
 #[derive(Debug, Args)]
@@ -151,7 +161,26 @@ struct AddNoteArgs {
 
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    output: OutputArg,
     predicate: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputArg {
+    Id,
+    Summary,
+    Json,
+}
+
+impl From<OutputArg> for OutputMode {
+    fn from(output: OutputArg) -> Self {
+        match output {
+            OutputArg::Id => OutputMode::Id,
+            OutputArg::Summary => OutputMode::Summary,
+            OutputArg::Json => OutputMode::Json,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -282,15 +311,19 @@ where
             ))
         }
         Some(Command::Ready(args)) => {
-            print_read(crate::read::ready(&read_store()?, &filters(args, None)?))
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::ready(&store, &filters, args.output.into()))
         }
         Some(Command::Blocked(args)) => {
-            print_read(crate::read::blocked(&read_store()?, &filters(args, None)?))
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::blocked(&store, &filters, args.output.into()))
         }
         Some(Command::List(args)) => {
             let store = read_store()?;
             let filters = filters(args.filters, args.status)?;
-            print_read(crate::read::list(&store, &filters))
+            print_read(crate::read::list(&store, &filters, args.output.into()))
         }
         Some(Command::Show(args)) => {
             if args.note.is_some() {
@@ -302,7 +335,11 @@ where
         Some(Command::Query(args)) => {
             let store = read_store()?;
             let predicate = args.predicate.join(" ");
-            print_read(crate::read::query(&store, Some(&predicate)))
+            print_read(crate::read::query(
+                &store,
+                Some(&predicate),
+                args.output.into(),
+            ))
         }
         Some(command) => Err(format!("not implemented: {}", command.name())),
     }
