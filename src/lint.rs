@@ -80,15 +80,14 @@ pub fn lint_store(store: &TicketStore) -> Result<Vec<Finding>> {
     Ok(findings)
 }
 
-pub fn lint_id_or_path(store: &TicketStore, id_or_path: &str) -> Result<Vec<Finding>> {
-    let path = PathBuf::from(id_or_path);
+pub fn resolve_id_or_path(store: &TicketStore, id_or_path: &str) -> Result<PathBuf> {
+    let path = Path::new(id_or_path);
     if path.exists() {
-        lint_path(&path)
+        Ok(path.to_path_buf())
     } else {
-        let path = store
+        store
             .resolve_id(id_or_path)
-            .map_err(|error| LintError::new(error.to_string()))?;
-        lint_path(&path)
+            .map_err(|error| LintError::new(error.to_string()))
     }
 }
 

@@ -424,7 +424,9 @@ fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
 fn run_lint(args: LintArgs) -> Result<(), String> {
     let store = read_store()?;
     let findings = if let Some(id_or_path) = args.id_or_path {
-        crate::lint::lint_id_or_path(&store, &id_or_path)
+        let path = crate::lint::resolve_id_or_path(&store, &id_or_path)
+            .map_err(|error| error.to_string())?;
+        crate::lint::lint_path(&path)
     } else {
         crate::lint::lint_store(&store)
     }
