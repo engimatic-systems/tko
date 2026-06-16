@@ -91,17 +91,17 @@ fn list_ready_and_blocked_use_filters_and_dependency_state() {
     let list = fixture.stdout(&["list", "--status", "open", "-T", "repo/tko"]);
     assert_eq!(
         list,
-        "sys-a    [open] - Alpha <- []\nsys-b    [open] - Bravo <- [sys-a]\n"
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
     );
 
     let ready = fixture.stdout(&["ready", "--assignee", "rosin"]);
     assert_eq!(
         ready,
-        "sys-a    [open] - Alpha <- []\nsys-d    [in_progress] - Delta <- [sys-c]\n"
+        "sys-a    [open] :: Alpha <- []\nsys-d    [in_progress] :: Delta <- [sys-c]\n"
     );
 
     let blocked = fixture.stdout(&["blocked", "-T", "repo/tko"]);
-    assert_eq!(blocked, "sys-b    [open] - Bravo <- [sys-a]\n");
+    assert_eq!(blocked, "sys-b    [open] :: Bravo <- [sys-a]\n");
 
     let ready_ids = fixture.stdout(&["ready", "--output", "id", "--assignee", "rosin"]);
     assert_eq!(ready_ids, "sys-a\nsys-d\n");
@@ -122,7 +122,7 @@ fn output_modes_cover_ids_summaries_and_json() {
     let summary = fixture.stdout(&["query", "--output", "summary", "status", "=", "open"]);
     assert_eq!(
         summary,
-        "sys-a    [open] - Alpha <- []\nsys-b    [open] - Bravo <- [sys-a]\n"
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
     );
 
     let output = fixture.stdout(&["query", "--output", "json", "status", "=", "open"]);

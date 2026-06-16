@@ -146,7 +146,7 @@ fn render_ticket(ticket: &Ticket, output: OutputMode) -> String {
 
 fn summary_line(ticket: &Ticket) -> String {
     format!(
-        "{:<8} [{}] - {} <- {}",
+        "{:<8} [{}] :: {} <- {}",
         ticket.id,
         ticket.properties.status,
         ticket.title,
