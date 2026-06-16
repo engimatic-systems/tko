@@ -2254,6 +2254,16 @@ Backfill guidance for existing tickets:
    new =add-note= behavior.
 5. Timestamp-only notes are valid; do not invent titles solely to satisfy lint.
 
+*** Note model
+
+#+begin_example
+NoteEntry:
+  stores the printable heading text
+  stores title text without timestamp
+  stores optional timestamp text
+  stores the full *** note subtree for show --note
+#+end_example
+
 #+begin_src rust :tangle src/notes.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -2291,6 +2301,25 @@ struct NoteEntry {
     timestamp: Option<String>,
     subtree: String,
 }
+#+end_src
+
+*** Note commands
+
+#+begin_example
+list_notes(store, id):
+  load the ticket by id
+  extract note entries from the ticket body
+  print note headings in document order
+
+show_note(store, id, note_match):
+  load the ticket by id
+  extract note entries from the ticket body
+  case-insensitively match title or timestamp text
+  print exactly one matching subtree
+  fail with candidate headings when the match is ambiguous
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
 
 pub fn list_notes(store: &TicketStore, id: &str) -> Result<String> {
     let ticket = store
@@ -2335,6 +2364,20 @@ pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<Stri
         }
     }
 }
+#+end_src
+
+*** Note extraction
+
+#+begin_example
+note_entries(body):
+  find the ticket-level ** Notes section
+  stop scanning at the next level-1 or level-2 heading
+  treat each level-3 heading as one note entry
+  include deeper child headings in that note's subtree
+  split the heading into optional timestamp and title
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
 
 fn note_entries(body: &str) -> Vec<NoteEntry> {
     let lines = split_lines(body);
@@ -2385,6 +2428,29 @@ fn note_entries(body: &str) -> Vec<NoteEntry> {
     }
     entries
 }
+#+end_src
+
+*** Note parsing helpers
+
+#+begin_example
+split_timestamp_title(heading_text):
+  strip a leading [timestamp] prefix when present
+  return optional timestamp and remaining title
+
+heading(line):
+  parse an Org heading line into level and title
+
+split_lines(text):
+  preserve line endings for subtree reconstruction
+
+finish_lines(lines):
+  join display lines with one final newline
+
+ensure_trailing_newline(text):
+  append one newline when a note subtree lacks one
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
 
 fn split_timestamp_title(heading_text: &str) -> (Option<&str>, &str) {
     let trimmed = heading_text.trim();
@@ -3757,6 +3823,16 @@ fn display_path(path: &Path) -> String {
 }
 #+end_src
 
+*** Note test fixture
+
+#+begin_example
+Fixture:
+  create a temporary ticket store
+  write ticket text by id
+  run the compiled tko binary with TICKETS_DIR pointed at the fixture store
+  provide stdout helper for successful commands
+#+end_example
+
 #+begin_src rust :tangle tests/notes.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -3804,6 +3880,17 @@ impl Fixture {
         String::from_utf8(output.stdout).expect("utf8 stdout")
     }
 }
+#+end_src
+
+*** Notes missing section
+
+#+begin_example
+notes without ** Notes:
+  exits successfully
+  prints no output
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn notes_handles_missing_section_successfully() {
@@ -3815,6 +3902,18 @@ fn notes_handles_missing_section_successfully() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
 }
+#+end_src
+
+*** Notes list output
+
+#+begin_example
+notes list:
+  lists level-3 note headings under ** Notes
+  preserves document order
+  permits timestamp-only and untimestamped headings
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn notes_lists_entries_in_document_order() {
@@ -3831,6 +3930,19 @@ fn notes_lists_entries_in_document_order() {
         "[2026-06-11 Thu 10:00Z] First title\n[2026-06-11 Thu 11:00Z]\nUntimestamped title\n"
     );
 }
+#+end_src
+
+*** Show note by title
+
+#+begin_example
+show --note title:
+  matches title text case-insensitively
+  prints exactly the matching note subtree
+  includes child headings in the selected subtree
+  excludes following sibling note bodies
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn show_note_matches_title_case_insensitively_and_prints_one_subtree() {
@@ -3848,6 +3960,17 @@ fn show_note_matches_title_case_insensitively_and_prints_one_subtree() {
     );
     assert!(!output.contains("Second body"));
 }
+#+end_src
+
+*** Show note by timestamp
+
+#+begin_example
+show --note timestamp:
+  matches timestamp text
+  prints exactly the matching note subtree
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn show_note_can_match_timestamp_text() {
@@ -3864,6 +3987,18 @@ fn show_note_can_match_timestamp_text() {
         "*** [2026-06-12 Fri 11:00Z] Second title\nSecond body.\n"
     );
 }
+#+end_src
+
+*** Ambiguous note match
+
+#+begin_example
+ambiguous show --note:
+  exits with status 2
+  prints matching candidate headings
+  does not print candidate note bodies
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn ambiguous_note_match_lists_candidates_without_bodies() {
@@ -3882,6 +4017,18 @@ fn ambiguous_note_match_lists_candidates_without_bodies() {
     assert!(stderr.contains("candidate: [2026-06-11 Thu 11:00Z] Alpha rollback"));
     assert!(!stderr.contains("secret body"));
 }
+#+end_src
+
+*** Add-note title limit
+
+#+begin_example
+add-note overlong title:
+  keeps note-title limit executable through note-facing tests
+  requires explicit --title syntax
+  exits with the write-layer title length error
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
 
 #[test]
 fn add_note_refuses_overlong_title() {
