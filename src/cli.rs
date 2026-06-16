@@ -1,8 +1,12 @@
 // Generated from tko.org. Do not edit by hand.
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use crate::read::{Filters, OutputMode};
+use crate::storage::TicketStore;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use std::env;
 use std::ffi::OsString;
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,9 +49,9 @@ enum Command {
     /// Remove tag(s) from a ticket.
     Untag(TagsArgs),
     /// List open or in-progress tickets with deps resolved.
-    Ready(FilterArgs),
+    Ready(ReadArgs),
     /// List open or in-progress tickets with unresolved deps.
-    Blocked(FilterArgs),
+    Blocked(ReadArgs),
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
@@ -122,11 +126,21 @@ struct FilterArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReadArgs {
+    #[command(flatten)]
+    filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
+}
+
+#[derive(Debug, Args)]
 struct ListArgs {
     #[arg(long)]
     status: Option<String>,
     #[command(flatten)]
     filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
 }
 
 #[derive(Debug, Args)]
@@ -146,7 +160,26 @@ struct AddNoteArgs {
 
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    output: OutputArg,
     predicate: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputArg {
+    Id,
+    Summary,
+    Json,
+}
+
+impl From<OutputArg> for OutputMode {
+    fn from(output: OutputArg) -> Self {
+        match output {
+            OutputArg::Id => OutputMode::Id,
+            OutputArg::Summary => OutputMode::Summary,
+            OutputArg::Json => OutputMode::Json,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -205,6 +238,37 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Ready(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::ready(&store, &filters, args.output.into()))
+        }
+        Some(Command::Blocked(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::blocked(&store, &filters, args.output.into()))
+        }
+        Some(Command::List(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, args.status)?;
+            print_read(crate::read::list(&store, &filters, args.output.into()))
+        }
+        Some(Command::Show(args)) => {
+            if args.note.is_some() {
+                return Err("not implemented: show --note".to_string());
+            }
+            let store = read_store()?;
+            print_read(crate::read::show(&store, &args.id, args.full))
+        }
+        Some(Command::Query(args)) => {
+            let store = read_store()?;
+            let predicate = args.predicate.join(" ");
+            print_read(crate::read::query(
+                &store,
+                Some(&predicate),
+                args.output.into(),
+            ))
+        }
         Some(command) => Err(format!("not implemented: {}", command.name())),
     }
 }
@@ -213,5 +277,26 @@ fn print_help() -> io::Result<()> {
     let mut command = Cli::command();
     command.print_long_help()?;
     println!();
+    Ok(())
+}
+
+fn read_store() -> Result<TicketStore, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
+    TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), false)
+        .map_err(|error| error.to_string())
+}
+
+fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
+    Ok(Filters {
+        status,
+        assignee: args.assignee,
+        tag: args.tag,
+    })
+}
+
+fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
     Ok(())
 }

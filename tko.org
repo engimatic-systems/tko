@@ -22,10 +22,13 @@ Generated files in this scaffold:
 - =Makefile=
 - =src/lib.rs=
 - =src/storage.rs=
+- =src/query.rs=
+- =src/read.rs=
 - =src/cli.rs=
 - =src/main.rs=
 - =tests/cli.rs=
 - =tests/storage.rs=
+- =tests/read.rs=
 
 * Project Files
 :PROPERTIES:
@@ -60,6 +63,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3.23"
@@ -76,7 +80,7 @@ tempfile = "3.23"
 CARGO ?= cargo
 EMACS ?= emacs
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs
 
 .PHONY: tangle check test
 
@@ -105,6 +109,8 @@ test:
 // Generated from tko.org. Do not edit by hand.
 
 pub mod cli;
+pub mod query;
+pub mod read;
 pub mod storage;
 #+end_src
 
@@ -553,6 +559,714 @@ fn line_ending(line: &str) -> &'static str {
 
 #+end_src
 
+** Query DSL
+:PROPERTIES:
+:CUSTOM_ID: query-dsl
+:END:
+
+#+begin_src rust :tangle src/query.rs
+// Generated from tko.org. Do not edit by hand.
+
+use crate::storage::Ticket;
+use std::error::Error;
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, QueryError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryError {
+    message: String,
+}
+
+impl QueryError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for QueryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for QueryError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Predicate {
+    expr: Expr,
+}
+
+impl Predicate {
+    pub fn parse(input: &str) -> Result<Self> {
+        let tokens = tokenize(input)?;
+        let mut parser = Parser { tokens, pos: 0 };
+        let expr = parser.parse_expr()?;
+        if parser.peek().is_some() {
+            return Err(QueryError::new("unexpected token after predicate"));
+        }
+        Ok(Self { expr })
+    }
+
+    pub fn matches(&self, ticket: &Ticket) -> Result<bool> {
+        self.expr.eval(ticket)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Expr {
+    Compare {
+        field: String,
+        op: CompareOp,
+        value: String,
+    },
+    Contains {
+        field: String,
+        value: String,
+    },
+    In {
+        field: String,
+        values: Vec<String>,
+    },
+    Presence {
+        field: String,
+        expected: bool,
+    },
+    Not(Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    fn eval(&self, ticket: &Ticket) -> Result<bool> {
+        match self {
+            Expr::Compare { field, op, value } => compare(ticket, field, *op, value),
+            Expr::Contains { field, value } => Ok(plural_field(ticket, field)?.contains(value)),
+            Expr::In { field, values } => Ok(values.contains(&scalar_field(ticket, field)?)),
+            Expr::Presence { field, expected } => Ok(field_present(ticket, field)? == *expected),
+            Expr::Not(expr) => Ok(!expr.eval(ticket)?),
+            Expr::And(left, right) => Ok(left.eval(ticket)? && right.eval(ticket)?),
+            Expr::Or(left, right) => Ok(left.eval(ticket)? || right.eval(ticket)?),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Token {
+    Word(String),
+    Op(CompareOp),
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Comma,
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl Parser {
+    fn parse_expr(&mut self) -> Result<Expr> {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_and()?;
+        while self.consume_word("or") {
+            let right = self.parse_and()?;
+            expr = Expr::Or(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_not()?;
+        while self.consume_word("and") {
+            let right = self.parse_not()?;
+            expr = Expr::And(Box::new(expr), Box::new(right));
+        }
+        Ok(expr)
+    }
+
+    fn parse_not(&mut self) -> Result<Expr> {
+        if self.consume_word("not") {
+            Ok(Expr::Not(Box::new(self.parse_not()?)))
+        } else {
+            self.parse_primary()
+        }
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr> {
+        if self.consume(&Token::LParen) {
+            let expr = self.parse_expr()?;
+            self.expect(Token::RParen)?;
+            return Ok(expr);
+        }
+
+        if self.consume_word("has") {
+            return Ok(Expr::Presence {
+                field: self.expect_word()?,
+                expected: true,
+            });
+        }
+
+        if self.consume_word("no") {
+            return Ok(Expr::Presence {
+                field: self.expect_word()?,
+                expected: false,
+            });
+        }
+
+        let field = self.expect_word()?;
+        if self.consume_word("contain") {
+            return Ok(Expr::Contains {
+                field,
+                value: self.expect_word()?,
+            });
+        }
+        if self.consume_word("in") {
+            return Ok(Expr::In {
+                field,
+                values: self.parse_list()?,
+            });
+        }
+        let op = self.expect_op()?;
+        Ok(Expr::Compare {
+            field,
+            op,
+            value: self.expect_word()?,
+        })
+    }
+
+    fn parse_list(&mut self) -> Result<Vec<String>> {
+        self.expect(Token::LBracket)?;
+        let mut values = Vec::new();
+        loop {
+            values.push(self.expect_word()?);
+            if self.consume(&Token::Comma) {
+                continue;
+            }
+            self.expect(Token::RBracket)?;
+            break;
+        }
+        Ok(values)
+    }
+
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
+
+    fn consume(&mut self, token: &Token) -> bool {
+        if self.peek() == Some(token) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn consume_word(&mut self, expected: &str) -> bool {
+        if matches!(self.peek(), Some(Token::Word(word)) if word == expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, expected: Token) -> Result<()> {
+        if self.consume(&expected) {
+            Ok(())
+        } else {
+            Err(QueryError::new(format!("expected {expected:?}")))
+        }
+    }
+
+    fn expect_word(&mut self) -> Result<String> {
+        match self.peek() {
+            Some(Token::Word(word)) => {
+                let word = word.clone();
+                self.pos += 1;
+                Ok(word)
+            }
+            _ => Err(QueryError::new("expected bare token")),
+        }
+    }
+
+    fn expect_op(&mut self) -> Result<CompareOp> {
+        match self.peek() {
+            Some(Token::Op(op)) => {
+                let op = *op;
+                self.pos += 1;
+                Ok(op)
+            }
+            _ => Err(QueryError::new("expected comparison operator")),
+        }
+    }
+}
+
+fn tokenize(input: &str) -> Result<Vec<Token>> {
+    let mut chars = input.chars().peekable();
+    let mut tokens = Vec::new();
+
+    while let Some(ch) = chars.peek().copied() {
+        match ch {
+            c if c.is_whitespace() => {
+                chars.next();
+            }
+            '(' => {
+                chars.next();
+                tokens.push(Token::LParen);
+            }
+            ')' => {
+                chars.next();
+                tokens.push(Token::RParen);
+            }
+            '[' => {
+                chars.next();
+                tokens.push(Token::LBracket);
+            }
+            ']' => {
+                chars.next();
+                tokens.push(Token::RBracket);
+            }
+            ',' => {
+                chars.next();
+                tokens.push(Token::Comma);
+            }
+            '=' => {
+                chars.next();
+                tokens.push(Token::Op(CompareOp::Eq));
+            }
+            '!' => {
+                chars.next();
+                if chars.next() == Some('=') {
+                    tokens.push(Token::Op(CompareOp::Ne));
+                } else {
+                    return Err(QueryError::new("expected != operator"));
+                }
+            }
+            '<' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::Op(CompareOp::Le));
+                } else {
+                    tokens.push(Token::Op(CompareOp::Lt));
+                }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::Op(CompareOp::Ge));
+                } else {
+                    tokens.push(Token::Op(CompareOp::Gt));
+                }
+            }
+            _ => {
+                let mut word = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next.is_whitespace() || "()[],=!<>".contains(next) {
+                        break;
+                    }
+                    word.push(next);
+                    chars.next();
+                }
+                if word.is_empty() {
+                    return Err(QueryError::new("invalid token"));
+                }
+                tokens.push(Token::Word(word));
+            }
+        }
+    }
+
+    if tokens.is_empty() {
+        return Err(QueryError::new("empty predicate"));
+    }
+
+    Ok(tokens)
+}
+
+fn compare(ticket: &Ticket, field: &str, op: CompareOp, value: &str) -> Result<bool> {
+    if field == "priority" {
+        let rhs: u8 = value
+            .parse()
+            .map_err(|_| QueryError::new(format!("priority value is not numeric: {value}")))?;
+        return Ok(compare_order(ticket.properties.priority, op, rhs));
+    }
+
+    let lhs = scalar_field(ticket, field)?;
+    Ok(match op {
+        CompareOp::Eq => lhs == value,
+        CompareOp::Ne => lhs != value,
+        CompareOp::Lt => lhs.as_str() < value,
+        CompareOp::Le => lhs.as_str() <= value,
+        CompareOp::Gt => lhs.as_str() > value,
+        CompareOp::Ge => lhs.as_str() >= value,
+    })
+}
+
+fn compare_order<T: Ord>(lhs: T, op: CompareOp, rhs: T) -> bool {
+    match op {
+        CompareOp::Eq => lhs == rhs,
+        CompareOp::Ne => lhs != rhs,
+        CompareOp::Lt => lhs < rhs,
+        CompareOp::Le => lhs <= rhs,
+        CompareOp::Gt => lhs > rhs,
+        CompareOp::Ge => lhs >= rhs,
+    }
+}
+
+fn scalar_field(ticket: &Ticket, field: &str) -> Result<String> {
+    match field {
+        "id" => Ok(ticket.id.clone()),
+        "status" => Ok(ticket.properties.status.clone()),
+        "type" => Ok(ticket.properties.ticket_type.clone()),
+        "assignee" => Ok(ticket.properties.assignee.clone().unwrap_or_default()),
+        "external-ref" => Ok(ticket.properties.external_ref.clone().unwrap_or_default()),
+        "parent" => Ok(ticket.properties.parent.clone().unwrap_or_default()),
+        "created" => Ok(ticket.properties.created.clone().unwrap_or_default()),
+        "title" => Ok(ticket.title.clone()),
+        "priority" => Ok(ticket.properties.priority.to_string()),
+        _ => Err(QueryError::new(format!("unknown scalar field: {field}"))),
+    }
+}
+
+fn plural_field<'a>(ticket: &'a Ticket, field: &str) -> Result<&'a [String]> {
+    match field {
+        "deps" => Ok(&ticket.properties.deps),
+        "links" => Ok(&ticket.properties.links),
+        "tags" => Ok(&ticket.properties.tags),
+        _ => Err(QueryError::new(format!("unknown plural field: {field}"))),
+    }
+}
+
+fn field_present(ticket: &Ticket, field: &str) -> Result<bool> {
+    if matches!(field, "deps" | "links" | "tags") {
+        return Ok(!plural_field(ticket, field)?.is_empty());
+    }
+    Ok(!scalar_field(ticket, field)?.is_empty())
+}
+#+end_src
+
+** Read Commands
+:PROPERTIES:
+:CUSTOM_ID: read-commands
+:END:
+
+#+begin_src rust :tangle src/read.rs
+// Generated from tko.org. Do not edit by hand.
+
+use crate::query::Predicate;
+use crate::storage::{Ticket, TicketStore, format_list_value};
+use serde_json::json;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, ReadError>;
+
+#[derive(Debug)]
+pub struct ReadError {
+    message: String,
+}
+
+impl ReadError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for ReadError {}
+
+#[derive(Debug, Clone, Default)]
+pub struct Filters {
+    pub status: Option<String>,
+    pub assignee: Option<String>,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    Id,
+    Summary,
+    Json,
+}
+
+pub fn show(store: &TicketStore, id: &str, full: bool) -> Result<String> {
+    let ticket = store
+        .load(id)
+        .map_err(|error| ReadError::new(error.to_string()))?;
+    let mut output = metadata_header(&ticket);
+    output.push('\n');
+    if full {
+        output.push_str(&ticket.body);
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    } else {
+        for heading in ticket.body.lines().filter(|line| line.starts_with('*')) {
+            output.push_str(heading);
+            output.push('\n');
+        }
+    }
+    Ok(output)
+}
+
+pub fn list(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
+    validate_filters(filters)?;
+    let mut lines = Vec::new();
+    for ticket in load_all(store)? {
+        if !matches_filters(&ticket, filters) {
+            continue;
+        }
+        lines.push(render_ticket(&ticket, output));
+    }
+    Ok(finish_lines(lines))
+}
+
+pub fn ready(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
+    let tickets = load_all(store)?;
+    let by_id = ticket_map(&tickets);
+    let mut ready = active_tickets(tickets, filters)?
+        .into_iter()
+        .filter(|ticket| unresolved_deps(ticket, &by_id).is_empty())
+        .collect::<Vec<_>>();
+    ready.sort_by_key(|ticket| ticket.id.clone());
+    Ok(finish_lines(
+        ready
+            .into_iter()
+            .map(|ticket| render_ticket(&ticket, output))
+            .collect(),
+    ))
+}
+
+pub fn blocked(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
+    let tickets = load_all(store)?;
+    let by_id = ticket_map(&tickets);
+    let mut blocked = active_tickets(tickets, filters)?
+        .into_iter()
+        .filter_map(|ticket| {
+            let unresolved = unresolved_deps(&ticket, &by_id);
+            if unresolved.is_empty() {
+                None
+            } else {
+                Some((ticket, unresolved))
+            }
+        })
+        .collect::<Vec<_>>();
+    blocked.sort_by_key(|(ticket, _)| ticket.id.clone());
+    Ok(finish_lines(
+        blocked
+            .into_iter()
+            .map(|(ticket, _)| render_ticket(&ticket, output))
+            .collect(),
+    ))
+}
+
+pub fn query(store: &TicketStore, predicate: Option<&str>, output: OutputMode) -> Result<String> {
+    let predicate = predicate
+        .filter(|predicate| !predicate.trim().is_empty())
+        .map(Predicate::parse)
+        .transpose()
+        .map_err(|error| ReadError::new(error.to_string()))?;
+    let mut lines = Vec::new();
+    for ticket in load_all(store)? {
+        if predicate
+            .as_ref()
+            .map(|predicate| predicate.matches(&ticket))
+            .transpose()
+            .map_err(|error| ReadError::new(error.to_string()))?
+            .unwrap_or(true)
+        {
+            lines.push(render_ticket(&ticket, output));
+        }
+    }
+    Ok(finish_lines(lines))
+}
+
+fn render_ticket(ticket: &Ticket, output: OutputMode) -> String {
+    match output {
+        OutputMode::Id => ticket.id.clone(),
+        OutputMode::Summary => summary_line(ticket),
+        OutputMode::Json => query_json(ticket).to_string(),
+    }
+}
+
+fn summary_line(ticket: &Ticket) -> String {
+    format!(
+        "{:<8} [{}] :: {} <- {}",
+        ticket.id,
+        ticket.properties.status,
+        ticket.title,
+        format_list_value(&ticket.properties.deps)
+    )
+}
+
+fn metadata_header(ticket: &Ticket) -> String {
+    let mut lines = vec![
+        format!("id: {}", ticket.id),
+        format!("status: {}", ticket.properties.status),
+        format!("deps: {}", format_list_value(&ticket.properties.deps)),
+        format!("links: {}", format_list_value(&ticket.properties.links)),
+        format!(
+            "created: {}",
+            ticket.properties.created.clone().unwrap_or_default()
+        ),
+        format!("type: {}", ticket.properties.ticket_type),
+        format!("priority: {}", ticket.properties.priority),
+    ];
+    if let Some(assignee) = &ticket.properties.assignee {
+        lines.push(format!("assignee: {assignee}"));
+    }
+    if let Some(external_ref) = &ticket.properties.external_ref {
+        lines.push(format!("external-ref: {external_ref}"));
+    }
+    if let Some(parent) = &ticket.properties.parent {
+        lines.push(format!("parent: {parent}"));
+    }
+    lines.push(format!(
+        "tags: {}",
+        format_list_value(&ticket.properties.tags)
+    ));
+    finish_lines(lines)
+}
+
+fn query_json(ticket: &Ticket) -> serde_json::Value {
+    let mut value = json!({
+        "id": ticket.id,
+        "status": ticket.properties.status,
+        "deps": ticket.properties.deps,
+        "links": ticket.properties.links,
+        "created": ticket.properties.created.clone().unwrap_or_default(),
+        "type": ticket.properties.ticket_type,
+        "priority": ticket.properties.priority,
+        "tags": ticket.properties.tags,
+    });
+    let object = value.as_object_mut().expect("query object");
+    if let Some(assignee) = &ticket.properties.assignee {
+        object.insert("assignee".to_string(), json!(assignee));
+    }
+    if let Some(external_ref) = &ticket.properties.external_ref {
+        object.insert("external-ref".to_string(), json!(external_ref));
+    }
+    if let Some(parent) = &ticket.properties.parent {
+        object.insert("parent".to_string(), json!(parent));
+    }
+    value
+}
+
+fn load_all(store: &TicketStore) -> Result<Vec<Ticket>> {
+    store
+        .ticket_paths()
+        .map_err(|error| ReadError::new(error.to_string()))?
+        .iter()
+        .map(|path| {
+            crate::storage::load_ticket(path).map_err(|error| ReadError::new(error.to_string()))
+        })
+        .collect()
+}
+
+fn ticket_map(tickets: &[Ticket]) -> HashMap<String, Ticket> {
+    tickets
+        .iter()
+        .map(|ticket| (ticket.id.clone(), ticket.clone()))
+        .collect()
+}
+
+fn active_tickets(tickets: Vec<Ticket>, filters: &Filters) -> Result<Vec<Ticket>> {
+    validate_filters(filters)?;
+    Ok(tickets
+        .into_iter()
+        .filter(|ticket| matches!(ticket.properties.status.as_str(), "open" | "in_progress"))
+        .filter(|ticket| matches_filters(ticket, filters))
+        .collect())
+}
+
+fn unresolved_deps(ticket: &Ticket, by_id: &HashMap<String, Ticket>) -> Vec<String> {
+    ticket
+        .properties
+        .deps
+        .iter()
+        .filter(|dep| {
+            by_id
+                .get(*dep)
+                .map(|ticket| ticket.properties.status.as_str() != "closed")
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+fn matches_filters(ticket: &Ticket, filters: &Filters) -> bool {
+    if filters
+        .status
+        .as_ref()
+        .is_some_and(|status| ticket.properties.status != *status)
+    {
+        return false;
+    }
+    if filters
+        .assignee
+        .as_ref()
+        .is_some_and(|assignee| ticket.properties.assignee.as_deref() != Some(assignee.as_str()))
+    {
+        return false;
+    }
+    if filters
+        .tag
+        .as_ref()
+        .is_some_and(|tag| !ticket.properties.tags.contains(tag))
+    {
+        return false;
+    }
+    true
+}
+
+fn validate_filters(filters: &Filters) -> Result<()> {
+    if let Some(status) = &filters.status {
+        if !matches!(
+            status.as_str(),
+            "open" | "in_progress" | "blocked" | "closed"
+        ) {
+            return Err(ReadError::new(format!("invalid status filter: {status}")));
+        }
+    }
+    Ok(())
+}
+
+fn finish_lines(lines: Vec<String>) -> String {
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+#+end_src
+
 ** CLI Surface
 :PROPERTIES:
 :CUSTOM_ID: cli-surface
@@ -565,9 +1279,13 @@ work.
 #+begin_src rust :tangle src/cli.rs
 // Generated from tko.org. Do not edit by hand.
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use crate::read::{Filters, OutputMode};
+use crate::storage::TicketStore;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use std::env;
 use std::ffi::OsString;
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -610,9 +1328,9 @@ enum Command {
     /// Remove tag(s) from a ticket.
     Untag(TagsArgs),
     /// List open or in-progress tickets with deps resolved.
-    Ready(FilterArgs),
+    Ready(ReadArgs),
     /// List open or in-progress tickets with unresolved deps.
-    Blocked(FilterArgs),
+    Blocked(ReadArgs),
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
@@ -687,11 +1405,21 @@ struct FilterArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReadArgs {
+    #[command(flatten)]
+    filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
+}
+
+#[derive(Debug, Args)]
 struct ListArgs {
     #[arg(long)]
     status: Option<String>,
     #[command(flatten)]
     filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
 }
 
 #[derive(Debug, Args)]
@@ -711,7 +1439,26 @@ struct AddNoteArgs {
 
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    output: OutputArg,
     predicate: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputArg {
+    Id,
+    Summary,
+    Json,
+}
+
+impl From<OutputArg> for OutputMode {
+    fn from(output: OutputArg) -> Self {
+        match output {
+            OutputArg::Id => OutputMode::Id,
+            OutputArg::Summary => OutputMode::Summary,
+            OutputArg::Json => OutputMode::Json,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -770,6 +1517,37 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Ready(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::ready(&store, &filters, args.output.into()))
+        }
+        Some(Command::Blocked(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::blocked(&store, &filters, args.output.into()))
+        }
+        Some(Command::List(args)) => {
+            let store = read_store()?;
+            let filters = filters(args.filters, args.status)?;
+            print_read(crate::read::list(&store, &filters, args.output.into()))
+        }
+        Some(Command::Show(args)) => {
+            if args.note.is_some() {
+                return Err("not implemented: show --note".to_string());
+            }
+            let store = read_store()?;
+            print_read(crate::read::show(&store, &args.id, args.full))
+        }
+        Some(Command::Query(args)) => {
+            let store = read_store()?;
+            let predicate = args.predicate.join(" ");
+            print_read(crate::read::query(
+                &store,
+                Some(&predicate),
+                args.output.into(),
+            ))
+        }
         Some(command) => Err(format!("not implemented: {}", command.name())),
     }
 }
@@ -778,6 +1556,27 @@ fn print_help() -> io::Result<()> {
     let mut command = Cli::command();
     command.print_long_help()?;
     println!();
+    Ok(())
+}
+
+fn read_store() -> Result<TicketStore, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
+    TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), false)
+        .map_err(|error| error.to_string())
+}
+
+fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
+    Ok(Filters {
+        status,
+        assignee: args.assignee,
+        tag: args.tag,
+    })
+}
+
+fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
     Ok(())
 }
 #+end_src
@@ -861,14 +1660,7 @@ fn known_commands_parse_but_remain_stubbed() {
         (&["unlink", "sys-ywp7", "sys-rer6"], "unlink"),
         (&["tag", "sys-ywp7", "repo/tko"], "tag"),
         (&["untag", "sys-ywp7", "repo/tko"], "untag"),
-        (&["ready", "-T", "repo/tko"], "ready"),
-        (&["blocked", "--assignee", "rosin"], "blocked"),
-        (&["list", "--status", "open"], "list"),
-        (&["ls", "--tag", "repo/tko"], "list"),
-        (&["show", "--full", "sys-ywp7"], "show"),
-        (&["show", "sys-ywp7", "--note", "Spec"], "show"),
         (&["add-note", "sys-ywp7", "Title"], "add-note"),
-        (&["query", "status", "=", "open"], "query"),
         (&["lint", "sys-ywp7"], "lint"),
         (&["notes", "sys-ywp7"], "notes"),
     ];
@@ -893,6 +1685,23 @@ fn unknown_flags_are_usage_errors() {
     assert!(stderr.contains("unexpected argument '--mystery'"));
 }
 
+#[test]
+fn note_fetch_remains_explicitly_unimplemented() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let tickets_dir = temp.path().join(".tickets");
+    std::fs::create_dir(&tickets_dir).expect("tickets dir");
+    std::fs::write(tickets_dir.join("sys-ywp7.org"), "* Ticket\n").expect("write ticket");
+
+    let output = Command::new(tko_bin())
+        .args(["show", "sys-ywp7", "--note", "Spec"])
+        .env("TICKETS_DIR", &tickets_dir)
+        .output()
+        .expect("tko command should run");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not implemented: show --note"));
+}
 #+end_src
 
 #+begin_src rust :tangle tests/storage.rs
@@ -1032,4 +1841,186 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
 }
 
+#+end_src
+
+#+begin_src rust :tangle tests/read.rs
+// Generated from tko.org. Do not edit by hand.
+
+use serde_json::Value;
+use std::path::PathBuf;
+use std::process::Command;
+use tempfile::TempDir;
+
+fn tko_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_tko")
+}
+
+struct Fixture {
+    _temp: TempDir,
+    tickets_dir: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tickets_dir = temp.path().join(".tickets");
+        std::fs::create_dir(&tickets_dir).expect("tickets dir");
+        write_ticket(
+            &tickets_dir,
+            "sys-a",
+            ":PROPERTIES:\n:TKO_ID: sys-a\n:TKO_STATUS: open\n:TKO_DEPS: []\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T10:00:00Z\n:TKO_TYPE: bug\n:TKO_PRIORITY: 1\n:TKO_ASSIGNEE: rosin\n:TKO_TAGS: [repo/tko]\n:END:\n\n* Alpha\n\n** Description\n\nAlpha body.\n",
+        );
+        write_ticket(
+            &tickets_dir,
+            "sys-b",
+            ":PROPERTIES:\n:TKO_ID: sys-b\n:TKO_STATUS: open\n:TKO_DEPS: [sys-a]\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T11:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 2\n:TKO_ASSIGNEE: rosin\n:TKO_TAGS: [repo/tko, archived]\n:END:\n\n* Bravo\n",
+        );
+        write_ticket(
+            &tickets_dir,
+            "sys-c",
+            ":PROPERTIES:\n:TKO_ID: sys-c\n:TKO_STATUS: closed\n:TKO_DEPS: []\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T12:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 0\n:TKO_TAGS: []\n:END:\n\n* Charlie\n",
+        );
+        write_ticket(
+            &tickets_dir,
+            "sys-d",
+            ":PROPERTIES:\n:TKO_ID: sys-d\n:TKO_STATUS: in_progress\n:TKO_DEPS: [sys-c]\n:TKO_LINKS: []\n:TKO_CREATED: 2026-06-11T13:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 3\n:TKO_ASSIGNEE: rosin\n:TKO_TAGS: [tooling]\n:END:\n\n* Delta\n",
+        );
+        Self {
+            _temp: temp,
+            tickets_dir,
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        Command::new(tko_bin())
+            .args(args)
+            .env("TICKETS_DIR", &self.tickets_dir)
+            .output()
+            .expect("tko command should run")
+    }
+
+    fn stdout(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("utf8 stdout")
+    }
+}
+
+fn write_ticket(tickets_dir: &std::path::Path, id: &str, text: &str) {
+    std::fs::write(tickets_dir.join(format!("{id}.org")), text).expect("write ticket");
+}
+
+#[test]
+fn show_prints_metadata_and_outline_or_full_body() {
+    let fixture = Fixture::new();
+
+    let outline = fixture.stdout(&["show", "sys-a"]);
+    assert!(outline.contains("id: sys-a\n"));
+    assert!(outline.contains("priority: 1\n"));
+    assert!(outline.contains("tags: [repo/tko]\n\n"));
+    assert!(outline.contains("* Alpha\n"));
+    assert!(outline.contains("** Description\n"));
+    assert!(!outline.contains("Alpha body."));
+
+    let full = fixture.stdout(&["show", "--full", "sys-a"]);
+    assert!(full.contains("Alpha body."));
+}
+
+#[test]
+fn list_ready_and_blocked_use_filters_and_dependency_state() {
+    let fixture = Fixture::new();
+
+    let list = fixture.stdout(&["list", "--status", "open", "-T", "repo/tko"]);
+    assert_eq!(
+        list,
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
+    );
+
+    let ready = fixture.stdout(&["ready", "--assignee", "rosin"]);
+    assert_eq!(
+        ready,
+        "sys-a    [open] :: Alpha <- []\nsys-d    [in_progress] :: Delta <- [sys-c]\n"
+    );
+
+    let blocked = fixture.stdout(&["blocked", "-T", "repo/tko"]);
+    assert_eq!(blocked, "sys-b    [open] :: Bravo <- [sys-a]\n");
+
+    let ready_ids = fixture.stdout(&["ready", "--output", "id", "--assignee", "rosin"]);
+    assert_eq!(ready_ids, "sys-a\nsys-d\n");
+
+    let blocked_json = fixture.stdout(&["blocked", "--output", "json", "-T", "repo/tko"]);
+    let row = serde_json::from_str::<Value>(blocked_json.trim()).expect("json row");
+    assert_eq!(row["id"], "sys-b");
+    assert_eq!(row["deps"], serde_json::json!(["sys-a"]));
+}
+
+#[test]
+fn output_modes_cover_ids_summaries_and_json() {
+    let fixture = Fixture::new();
+
+    let ids = fixture.stdout(&["query", "status", "=", "open"]);
+    assert_eq!(ids, "sys-a\nsys-b\n");
+
+    let summary = fixture.stdout(&["query", "--output", "summary", "status", "=", "open"]);
+    assert_eq!(
+        summary,
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
+    );
+
+    let output = fixture.stdout(&["query", "--output", "json", "status", "=", "open"]);
+    let rows = output
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json row"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], "sys-a");
+    assert_eq!(rows[0]["priority"], 1);
+    assert!(rows[0]["priority"].is_number());
+}
+
+#[test]
+fn query_dsl_supports_boolean_membership_and_presence() {
+    let fixture = Fixture::new();
+
+    let repo = fixture.stdout(&[
+        "query",
+        "status",
+        "in",
+        "[open,",
+        "in_progress]",
+        "and",
+        "tags",
+        "contain",
+        "repo/tko",
+    ]);
+    assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
+
+    let complex = fixture.stdout(&[
+        "query", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
+        "contain", "archived",
+    ]);
+    assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
+
+    let no_deps = fixture.stdout(&["query", "no", "deps"]);
+    assert_eq!(lines(&no_deps), ["sys-a", "sys-c"]);
+}
+
+#[test]
+fn query_does_not_accept_jq_filters() {
+    let fixture = Fixture::new();
+    let output = fixture.run(&["query", ".status", "==", "open"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty());
+}
+
+fn lines(output: &str) -> Vec<&str> {
+    output.lines().collect()
+}
 #+end_src

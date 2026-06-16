@@ -3,7 +3,7 @@
 CARGO ?= cargo
 EMACS ?= emacs
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs
 
 .PHONY: tangle check test
 
