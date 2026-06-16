@@ -2043,11 +2043,12 @@ lint_path(path):
 
 pub fn lint_store(store: &TicketStore) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
-    for path in store
+    let paths = store
         .ticket_paths()
-        .map_err(|error| LintError::new(error.to_string()))?
-    {
-        findings.extend(lint_path(&path)?);
+        .map_err(|error| LintError::new(error.to_string()))?;
+    for path in paths {
+        let ticket_findings = lint_path(&path)?;
+        findings.extend(ticket_findings);
     }
     Ok(findings)
 }
