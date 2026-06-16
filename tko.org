@@ -128,17 +128,11 @@ TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- notes pla
 TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- show pla-gq0a --note calibration
 #+end_src
 
-Migration check:
+Canonical property precondition:
 
-#+begin_src sh
-TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- migrate-legacy-properties
-#+end_src
-
-Review the report. Apply only when the diff is expected:
-
-#+begin_src sh
-TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- migrate-legacy-properties --apply
-#+end_src
+Existing tickets must already use =TKO_*= property keys before switch-over. If a
+repository still has old property names, migrate it with a separate reviewed
+one-shot script before installing the Rust binary.
 
 Switch local binary:
 
