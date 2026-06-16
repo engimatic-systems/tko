@@ -204,15 +204,29 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     let fixture = Fixture::new();
 
     assert_eq!(
-        fixture.stdout(&["add-note", "sys-a", "Title line\\nBody line"]),
+        fixture.stdout(&[
+            "add-note",
+            "sys-a",
+            "--title",
+            "Title line",
+            "--body",
+            "Body line",
+        ]),
         "Note added to sys-a\n"
     );
     let text = fixture.read("sys-a");
     assert!(text.contains("** Notes\n*** ["));
     assert!(text.contains("] Title line\nBody line\n"));
 
+    assert_eq!(
+        fixture.stdout(&["add-note", "sys-b", "--title", "Title only"]),
+        "Note added to sys-b\n"
+    );
+    let text = fixture.read("sys-b");
+    assert!(text.contains("] Title only\n"));
+
     let mut child = Command::new(tko_bin())
-        .args(["add-note", "sys-a"])
+        .args(["add-note", "sys-a", "--title", "Piped title"])
         .env("TICKETS_DIR", &fixture.tickets_dir)
         .current_dir(fixture.temp.path())
         .stdin(Stdio::piped())
@@ -222,12 +236,15 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     {
         use std::io::Write;
         let stdin = child.stdin.as_mut().expect("stdin");
-        stdin
-            .write_all(b"Piped title\nPiped body\n")
-            .expect("write stdin");
+        stdin.write_all(b"Piped body\n").expect("write stdin");
     }
     let output = child.wait_with_output().expect("wait");
     assert!(output.status.success());
     let text = fixture.read("sys-a");
     assert!(text.contains("] Piped title\nPiped body\n"));
+
+    let output = fixture.run(&["add-note", "sys-a"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--title"));
 }

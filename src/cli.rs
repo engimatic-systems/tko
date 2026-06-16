@@ -156,7 +156,10 @@ struct ShowArgs {
 #[derive(Debug, Args)]
 struct AddNoteArgs {
     id: String,
-    text: Vec<String>,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    body: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -303,11 +306,12 @@ where
             &args.tags,
         )),
         Some(Command::AddNote(args)) => {
-            let text = note_text(&args)?;
+            let body = note_body(&args)?;
             print_write(crate::write::add_note(
                 &write_store(false)?,
                 &args.id,
-                &text,
+                &args.title,
+                body.as_deref(),
             ))
         }
         Some(Command::Ready(args)) => {
@@ -396,17 +400,17 @@ fn split_tags(tags: Option<String>) -> Vec<String> {
         .collect()
 }
 
-fn note_text(args: &AddNoteArgs) -> Result<String, String> {
-    if !args.text.is_empty() {
-        Ok(args.text.join(" "))
+fn note_body(args: &AddNoteArgs) -> Result<Option<String>, String> {
+    if args.body.is_some() {
+        Ok(args.body.clone())
     } else if !io::stdin().is_terminal() {
         let mut text = String::new();
         io::stdin()
             .read_to_string(&mut text)
             .map_err(|error| error.to_string())?;
-        Ok(text)
+        Ok(Some(text))
     } else {
-        Ok(String::new())
+        Ok(None)
     }
 }
 

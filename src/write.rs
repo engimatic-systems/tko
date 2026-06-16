@@ -148,26 +148,29 @@ pub fn remove_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<Str
     mutate_tags(store, id, tags, Mutation::Remove)
 }
 
-pub fn add_note(store: &TicketStore, id: &str, text: &str) -> Result<String> {
+pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) -> Result<String> {
     let resolved = resolved_id(store, id)?;
     let path = store
         .resolve_id(&resolved)
         .map_err(|error| WriteError::new(error.to_string()))?;
     let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
-    let note_text = text.replace("\\n", "\n");
-    let (title, body) = split_note_text(&note_text);
+    let title = expand_escaped_newlines(title);
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("note title is required"));
+    }
+    if title.contains('\n') {
+        return Err(WriteError::new("note title must be one line"));
+    }
     if title.chars().count() > 72 {
         return Err(WriteError::new("note title exceeds 72 characters"));
     }
+    let body = body.map(expand_escaped_newlines).unwrap_or_default();
 
     let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
-    let mut note = if title.is_empty() {
-        format!("*** {timestamp}\n")
-    } else {
-        format!("*** {timestamp} {title}\n")
-    };
+    let mut note = format!("*** {timestamp} {title}\n");
     if !body.is_empty() {
-        note.push_str(body);
+        note.push_str(&body);
         if !note.ends_with('\n') {
             note.push('\n');
         }
@@ -386,13 +389,6 @@ fn append_note(document: String, note: &str) -> String {
     lines.push("\n** Notes\n".to_string());
     lines.push(note.to_string());
     lines.concat()
-}
-
-fn split_note_text(text: &str) -> (&str, &str) {
-    match text.split_once('\n') {
-        Some((title, body)) => (title.trim(), body),
-        None => (text.trim(), ""),
-    }
 }
 
 fn push_property(text: &mut String, key: &str, value: &str) {
