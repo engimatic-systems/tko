@@ -1,12 +1,12 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::read::Filters;
+use crate::read::{Filters, OutputMode};
 use crate::storage::TicketStore;
 use crate::write::CreateTicket;
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Read};
+use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -25,6 +25,8 @@ pub struct Cli {
 enum Command {
     /// Print command help.
     Help,
+    /// Initialize ticket storage.
+    Init,
     /// Create a ticket.
     Create(CreateArgs),
     /// Set status to in_progress.
@@ -50,9 +52,9 @@ enum Command {
     /// Remove tag(s) from a ticket.
     Untag(TagsArgs),
     /// List open or in-progress tickets with deps resolved.
-    Ready(FilterArgs),
+    Ready(ReadArgs),
     /// List open or in-progress tickets with unresolved deps.
-    Blocked(FilterArgs),
+    Blocked(ReadArgs),
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
@@ -71,7 +73,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct CreateArgs {
-    title: Vec<String>,
+    title: String,
     #[arg(short = 'd', long)]
     description: Option<String>,
     #[arg(long)]
@@ -127,11 +129,21 @@ struct FilterArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReadArgs {
+    #[command(flatten)]
+    filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
+}
+
+#[derive(Debug, Args)]
 struct ListArgs {
     #[arg(long)]
     status: Option<String>,
     #[command(flatten)]
     filters: FilterArgs,
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary)]
+    output: OutputArg,
 }
 
 #[derive(Debug, Args)]
@@ -146,12 +158,34 @@ struct ShowArgs {
 #[derive(Debug, Args)]
 struct AddNoteArgs {
     id: String,
-    text: Vec<String>,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    body: Option<String>,
 }
 
 #[derive(Debug, Args)]
 struct QueryArgs {
+    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    output: OutputArg,
     predicate: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputArg {
+    Id,
+    Summary,
+    Json,
+}
+
+impl From<OutputArg> for OutputMode {
+    fn from(output: OutputArg) -> Self {
+        match output {
+            OutputArg::Id => OutputMode::Id,
+            OutputArg::Summary => OutputMode::Summary,
+            OutputArg::Json => OutputMode::Json,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +197,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Help => "help",
+            Command::Init => "init",
             Command::Create(_) => "create",
             Command::Start(_) => "start",
             Command::Block(_) => "block",
@@ -210,9 +245,14 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Init) => {
+            let store = write_store(true)?;
+            println!("Initialized {}", store.tickets_dir().display());
+            Ok(())
+        }
         Some(Command::Create(args)) => {
             let cwd = env::current_dir().map_err(|error| error.to_string())?;
-            let store = write_store(true)?;
+            let store = write_store(false)?;
             let id = crate::write::create(&store, &cwd, create_ticket(args))
                 .map_err(|error| error.to_string())?;
             println!("{id}");
@@ -273,24 +313,26 @@ where
             &args.id,
             &args.tags,
         )),
-        Some(Command::AddNote(args)) => {
-            let text = note_text(&args)?;
-            print_write(crate::write::add_note(
-                &write_store(false)?,
-                &args.id,
-                &text,
-            ))
-        }
+        Some(Command::AddNote(args)) => print_write(crate::write::add_note(
+            &write_store(false)?,
+            &args.id,
+            &args.title,
+            args.body.as_deref(),
+        )),
         Some(Command::Ready(args)) => {
-            print_read(crate::read::ready(&read_store()?, &filters(args, None)?))
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::ready(&store, &filters, args.output.into()))
         }
         Some(Command::Blocked(args)) => {
-            print_read(crate::read::blocked(&read_store()?, &filters(args, None)?))
+            let store = read_store()?;
+            let filters = filters(args.filters, None)?;
+            print_read(crate::read::blocked(&store, &filters, args.output.into()))
         }
         Some(Command::List(args)) => {
             let store = read_store()?;
             let filters = filters(args.filters, args.status)?;
-            print_read(crate::read::list(&store, &filters))
+            print_read(crate::read::list(&store, &filters, args.output.into()))
         }
         Some(Command::Show(args)) => {
             if args.note.is_some() {
@@ -302,7 +344,11 @@ where
         Some(Command::Query(args)) => {
             let store = read_store()?;
             let predicate = args.predicate.join(" ");
-            print_read(crate::read::query(&store, Some(&predicate)))
+            print_read(crate::read::query(
+                &store,
+                Some(&predicate),
+                args.output.into(),
+            ))
         }
         Some(Command::Lint(args)) => run_lint(args),
         Some(command) => Err(format!("not implemented: {}", command.name())),
@@ -332,12 +378,7 @@ fn write_store(create_if_missing: bool) -> Result<TicketStore, String> {
 
 fn create_ticket(args: CreateArgs) -> CreateTicket {
     CreateTicket {
-        title: args
-            .title
-            .last()
-            .cloned()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| "Untitled".to_string()),
+        title: args.title,
         description: args.description,
         scope: args.scope,
         design: args.design,
@@ -358,20 +399,6 @@ fn split_tags(tags: Option<String>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(ToOwned::to_owned)
         .collect()
-}
-
-fn note_text(args: &AddNoteArgs) -> Result<String, String> {
-    if !args.text.is_empty() {
-        Ok(args.text.join(" "))
-    } else if !io::stdin().is_terminal() {
-        let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(text)
-    } else {
-        Ok(String::new())
-    }
 }
 
 fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {

@@ -6,7 +6,6 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, WriteError>;
@@ -48,9 +47,12 @@ pub struct CreateTicket {
 }
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("ticket title is required"));
+    }
     validate_type(&input.ticket_type)?;
     validate_priority(input.priority)?;
-    fs::create_dir_all(store.tickets_dir()).map_err(|error| WriteError::new(error.to_string()))?;
 
     let id = unique_id(store, cwd)?;
     let parent = input
@@ -58,7 +60,6 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         .as_ref()
         .map(|parent| resolved_id(store, parent))
         .transpose()?;
-    let assignee = input.assignee.or_else(git_user_name);
 
     let mut text = String::new();
     text.push_str(":PROPERTIES:\n");
@@ -73,7 +74,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = assignee.filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input.assignee.filter(|value| !value.trim().is_empty()) {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
     if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
@@ -86,7 +87,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         push_property(&mut text, "TKO_TAGS", &format_list_value(&input.tags));
     }
     text.push_str(":END:\n\n");
-    text.push_str(&format!("* {}\n", input.title));
+    text.push_str(&format!("* {title}\n"));
     push_section(&mut text, "Description", input.description.as_deref());
     push_section(&mut text, "Scope", input.scope.as_deref());
     push_section(&mut text, "Design", input.design.as_deref());
@@ -146,36 +147,6 @@ pub fn add_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String
 
 pub fn remove_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String> {
     mutate_tags(store, id, tags, Mutation::Remove)
-}
-
-pub fn add_note(store: &TicketStore, id: &str, text: &str) -> Result<String> {
-    let resolved = resolved_id(store, id)?;
-    let path = store
-        .resolve_id(&resolved)
-        .map_err(|error| WriteError::new(error.to_string()))?;
-    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
-    let note_text = text.replace("\\n", "\n");
-    let (title, body) = split_note_text(&note_text);
-    if title.chars().count() > 72 {
-        return Err(WriteError::new("note title exceeds 72 characters"));
-    }
-
-    let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
-    let mut note = if title.is_empty() {
-        format!("*** {timestamp}\n")
-    } else {
-        format!("*** {timestamp} {title}\n")
-    };
-    if !body.is_empty() {
-        note.push_str(body);
-        if !note.ends_with('\n') {
-            note.push('\n');
-        }
-    }
-
-    let updated = append_note(document, &note);
-    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
-    Ok(format!("Note added to {resolved}\n"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,45 +325,58 @@ fn relation_message(
     }
 }
 
-fn append_note(document: String, note: &str) -> String {
-    let mut lines = split_inclusive_lines(&document);
-    if let Some(notes_index) = lines
-        .iter()
-        .position(|line| trim_line(line).eq_ignore_ascii_case("** Notes"))
-    {
-        let insert_at = lines
-            .iter()
-            .enumerate()
-            .skip(notes_index + 1)
-            .find_map(|(index, line)| {
-                let trimmed = trim_line(line);
-                if trimmed.starts_with("* ") || trimmed.starts_with("** ") {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(lines.len());
-        if insert_at > 0 && !lines[insert_at - 1].ends_with('\n') {
-            lines[insert_at - 1].push('\n');
+pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let path = store
+        .resolve_id(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("note title is required"));
+    }
+    if title.contains("\\n") {
+        return Err(WriteError::new(
+            "note title must not contain escaped newlines",
+        ));
+    }
+    if title.contains('\n') {
+        return Err(WriteError::new("note title must be one line"));
+    }
+    if title.chars().count() > 72 {
+        return Err(WriteError::new("note title exceeds 72 characters"));
+    }
+    let body = body.map(expand_escaped_newlines).unwrap_or_default();
+
+    let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
+    let mut note = format!("*** {timestamp} {title}\n");
+    if !body.is_empty() {
+        note.push_str(&body);
+        if !note.ends_with('\n') {
+            note.push('\n');
         }
-        lines.insert(insert_at, note.to_string());
-        return lines.concat();
     }
 
-    if !document.ends_with('\n') {
-        lines.push("\n".to_string());
-    }
-    lines.push("\n** Notes\n".to_string());
-    lines.push(note.to_string());
-    lines.concat()
+    let updated = append_note(document, &note);
+    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(format!("Note added to {resolved}\n"))
 }
 
-fn split_note_text(text: &str) -> (&str, &str) {
-    match text.split_once('\n') {
-        Some((title, body)) => (title.trim(), body),
-        None => (text.trim(), ""),
+fn append_note(mut document: String, note: &str) -> String {
+    let has_notes = document
+        .lines()
+        .any(|line| line.trim_end_matches('\r').eq_ignore_ascii_case("** Notes"));
+    if !document.ends_with('\n') && !document.is_empty() {
+        document.push('\n');
     }
+    if !has_notes {
+        if !document.is_empty() {
+            document.push('\n');
+        }
+        document.push_str("** Notes\n");
+    }
+    document.push_str(note);
+    document
 }
 
 fn push_property(text: &mut String, key: &str, value: &str) {
@@ -470,20 +454,6 @@ fn id_suffix() -> String {
     suffix
 }
 
-fn git_user_name() -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "user.name"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn validate_status(status: &str) -> Result<()> {
     if matches!(status, "open" | "in_progress" | "blocked" | "closed") {
         Ok(())
@@ -513,16 +483,4 @@ fn file_stem(path: &Path) -> Result<String> {
         .and_then(|stem| stem.to_str())
         .map(ToOwned::to_owned)
         .ok_or_else(|| WriteError::new(format!("ticket path has no file stem: {}", path.display())))
-}
-
-fn split_inclusive_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        text.split_inclusive('\n').map(ToOwned::to_owned).collect()
-    }
-}
-
-fn trim_line(line: &str) -> &str {
-    line.trim_end_matches(['\r', '\n'])
 }

@@ -20,6 +20,7 @@ fn root_help_lists_command_surface() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("minimal org-mode ticket system"));
+    assert!(stdout.contains("init"));
     assert!(stdout.contains("create"));
     assert!(stdout.contains("ready"));
     assert!(stdout.contains("blocked"));
