@@ -82,6 +82,18 @@ tempfile = "3.23"
 :CUSTOM_ID: check-surface
 :END:
 
+The Makefile is the local verification and install surface.
+
+- =check= tangles from =tko.org=, requires generated files to be clean, then
+  runs the Rust test suite.
+- =install= runs =check= before installing this checkout with =cargo install
+  --path .=.
+- =install-smoke= installs into a temporary root and verifies the installed
+  =tko help= command runs.
+
+The command runners and install paths stay configurable through =CARGO=,
+=EMACS=, =PREFIX=, =INSTALL_ROOT=, and =CARGO_INSTALL_FLAGS=.
+
 #+begin_src makefile :tangle Makefile
 # Generated from tko.org. Do not edit by hand.
 
