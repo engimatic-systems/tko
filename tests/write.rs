@@ -1,7 +1,7 @@
 // Generated from tko.org. Do not edit by hand.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use tempfile::TempDir;
 
 fn tko_bin() -> &'static str {
@@ -65,7 +65,6 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
 
     let id = fixture.stdout(&[
         "create",
-        "Ignored",
         "Created ticket",
         "--description",
         "Line one\\nLine two",
@@ -101,6 +100,30 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
     assert!(text.contains("** Description\n\nLine one\nLine two\n"));
     assert!(text.contains("** Scope\n\nSmall\n"));
     assert!(!text.contains(":TK_"));
+
+    let id = fixture.stdout(&["create", "No assignee"]);
+    let text = fixture.read(id.trim());
+    assert!(!text.contains(":TKO_ASSIGNEE:"));
+
+    let output = fixture.run(&["create", ""]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ticket title is required"));
+}
+
+#[test]
+fn init_creates_ticket_storage_explicitly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(tko_bin())
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .expect("run init");
+
+    assert!(output.status.success());
+    assert!(temp.path().join(".tickets").is_dir());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Initialized"));
 }
 
 #[test]
@@ -204,30 +227,48 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     let fixture = Fixture::new();
 
     assert_eq!(
-        fixture.stdout(&["add-note", "sys-a", "Title line\\nBody line"]),
+        fixture.stdout(&[
+            "add-note",
+            "sys-a",
+            "--title",
+            "Title line",
+            "--body",
+            "Body line",
+        ]),
         "Note added to sys-a\n"
     );
     let text = fixture.read("sys-a");
     assert!(text.contains("** Notes\n*** ["));
     assert!(text.contains("] Title line\nBody line\n"));
 
-    let mut child = Command::new(tko_bin())
-        .args(["add-note", "sys-a"])
-        .env("TICKETS_DIR", &fixture.tickets_dir)
-        .current_dir(fixture.temp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn tko");
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin");
-        stdin
-            .write_all(b"Piped title\nPiped body\n")
-            .expect("write stdin");
-    }
-    let output = child.wait_with_output().expect("wait");
-    assert!(output.status.success());
+    assert_eq!(
+        fixture.stdout(&[
+            "add-note",
+            "sys-a",
+            "--title",
+            "Escaped body",
+            "--body",
+            "Line one\\nLine two",
+        ]),
+        "Note added to sys-a\n"
+    );
     let text = fixture.read("sys-a");
-    assert!(text.contains("] Piped title\nPiped body\n"));
+    assert!(text.contains("] Escaped body\nLine one\nLine two\n"));
+
+    assert_eq!(
+        fixture.stdout(&["add-note", "sys-b", "--title", "Title only"]),
+        "Note added to sys-b\n"
+    );
+    let text = fixture.read("sys-b");
+    assert!(text.contains("] Title only\n"));
+
+    let output = fixture.run(&["add-note", "sys-a"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--title"));
+
+    let output = fixture.run(&["add-note", "sys-a", "--title", "Bad\\nTitle"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("escaped newlines"));
 }
