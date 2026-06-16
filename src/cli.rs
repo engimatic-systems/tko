@@ -2,6 +2,7 @@
 
 use crate::read::{Filters, OutputMode};
 use crate::storage::TicketStore;
+use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::ffi::OsString;
@@ -24,6 +25,8 @@ pub struct Cli {
 enum Command {
     /// Print command help.
     Help,
+    /// Initialize ticket storage.
+    Init,
     /// Create a ticket.
     Create(CreateArgs),
     /// Set status to in_progress.
@@ -70,7 +73,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct CreateArgs {
-    title: Option<String>,
+    title: String,
     #[arg(short = 'd', long)]
     description: Option<String>,
     #[arg(long)]
@@ -155,7 +158,10 @@ struct ShowArgs {
 #[derive(Debug, Args)]
 struct AddNoteArgs {
     id: String,
-    text: Vec<String>,
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    body: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -191,6 +197,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Help => "help",
+            Command::Init => "init",
             Command::Create(_) => "create",
             Command::Start(_) => "start",
             Command::Block(_) => "block",
@@ -238,6 +245,80 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Init) => {
+            let store = write_store(true)?;
+            println!("Initialized {}", store.tickets_dir().display());
+            Ok(())
+        }
+        Some(Command::Create(args)) => {
+            let cwd = env::current_dir().map_err(|error| error.to_string())?;
+            let store = write_store(false)?;
+            let id = crate::write::create(&store, &cwd, create_ticket(args))
+                .map_err(|error| error.to_string())?;
+            println!("{id}");
+            Ok(())
+        }
+        Some(Command::Status(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            &args.status,
+        )),
+        Some(Command::Start(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "in_progress",
+        )),
+        Some(Command::Block(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "blocked",
+        )),
+        Some(Command::Close(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "closed",
+        )),
+        Some(Command::Reopen(args)) => print_write(crate::write::set_status(
+            &write_store(false)?,
+            &args.id,
+            "open",
+        )),
+        Some(Command::Dep(args)) => print_write(crate::write::add_dependency(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Undep(args)) => print_write(crate::write::remove_dependency(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Link(args)) => print_write(crate::write::add_link(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Unlink(args)) => print_write(crate::write::remove_link(
+            &write_store(false)?,
+            &args.id,
+            &args.target_id,
+        )),
+        Some(Command::Tag(args)) => print_write(crate::write::add_tags(
+            &write_store(false)?,
+            &args.id,
+            &args.tags,
+        )),
+        Some(Command::Untag(args)) => print_write(crate::write::remove_tags(
+            &write_store(false)?,
+            &args.id,
+            &args.tags,
+        )),
+        Some(Command::AddNote(args)) => print_write(crate::write::add_note(
+            &write_store(false)?,
+            &args.id,
+            &args.title,
+            args.body.as_deref(),
+        )),
         Some(Command::Ready(args)) => {
             let store = read_store()?;
             let filters = filters(args.filters, None)?;
@@ -287,6 +368,38 @@ fn read_store() -> Result<TicketStore, String> {
         .map_err(|error| error.to_string())
 }
 
+fn write_store(create_if_missing: bool) -> Result<TicketStore, String> {
+    let cwd = env::current_dir().map_err(|error| error.to_string())?;
+    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
+    TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), create_if_missing)
+        .map_err(|error| error.to_string())
+}
+
+fn create_ticket(args: CreateArgs) -> CreateTicket {
+    CreateTicket {
+        title: args.title,
+        description: args.description,
+        scope: args.scope,
+        design: args.design,
+        acceptance: args.acceptance,
+        ticket_type: args.ticket_type.unwrap_or_else(|| "task".to_string()),
+        priority: args.priority.unwrap_or(2),
+        assignee: args.assignee,
+        external_ref: args.external_ref,
+        parent: args.parent,
+        tags: split_tags(args.tags),
+    }
+}
+
+fn split_tags(tags: Option<String>) -> Vec<String> {
+    tags.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
     Ok(Filters {
         status,
@@ -296,6 +409,12 @@ fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> 
 }
 
 fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
+    Ok(())
+}
+
+fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
