@@ -350,6 +350,7 @@ where
                 args.output.into(),
             ))
         }
+        Some(Command::Lint(args)) => run_lint(args),
         Some(command) => Err(format!("not implemented: {}", command.name())),
     }
 }
@@ -418,4 +419,26 @@ fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
+}
+
+fn run_lint(args: LintArgs) -> Result<(), String> {
+    let store = read_store()?;
+    let findings = if let Some(id_or_path) = args.id_or_path {
+        let path = crate::lint::resolve_id_or_path(&store, &id_or_path)
+            .map_err(|error| error.to_string())?;
+        crate::lint::lint_path(&path)
+    } else {
+        crate::lint::lint_store(&store)
+    }
+    .map_err(|error| error.to_string())?;
+
+    for finding in &findings {
+        println!("{finding}");
+    }
+
+    if crate::lint::has_failures(&findings) {
+        Err("lint failed".to_string())
+    } else {
+        Ok(())
+    }
 }
