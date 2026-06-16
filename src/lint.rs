@@ -1,6 +1,6 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, lint_legacy_property_keys};
+use crate::storage::TicketStore;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -94,18 +94,6 @@ pub fn lint_path(path: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     findings.extend(lint_semantic_headings(path, &text));
     findings.extend(lint_note_titles(path, &text));
-    findings.extend(
-        lint_legacy_property_keys(path)
-            .map_err(|error| LintError::new(error.to_string()))?
-            .into_iter()
-            .map(|finding| Finding {
-                path: finding.path,
-                line: finding.line,
-                code: finding.code,
-                severity: Severity::Failure,
-                message: finding.message,
-            }),
-    );
     Ok(findings)
 }
 

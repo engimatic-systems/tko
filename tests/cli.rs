@@ -78,39 +78,3 @@ fn note_fetch_remains_explicitly_unimplemented() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not implemented: show --note"));
 }
-
-#[test]
-fn migration_command_reports_and_applies() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let tickets_dir = temp.path().join(".tickets");
-    std::fs::create_dir(&tickets_dir).expect("tickets dir");
-    let ticket_path = tickets_dir.join("sys-legacy.org");
-    std::fs::write(
-        &ticket_path,
-        ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Legacy\n",
-    )
-    .expect("write ticket");
-
-    let dry_run = Command::new(tko_bin())
-        .args(["migrate-legacy-properties"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert!(dry_run.status.success());
-    let stdout = String::from_utf8_lossy(&dry_run.stdout);
-    assert!(stdout.contains("rename TK_STATUS -> TKO_STATUS"));
-    let unchanged = std::fs::read_to_string(&ticket_path).expect("read ticket");
-    assert!(unchanged.contains(":TK_STATUS: open"));
-
-    let apply = Command::new(tko_bin())
-        .args(["migrate-legacy-properties", "--apply", "legacy"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert!(apply.status.success());
-    let migrated = std::fs::read_to_string(&ticket_path).expect("read ticket");
-    assert!(migrated.contains(":TKO_STATUS: open"));
-    assert!(!migrated.contains(":TK_STATUS: open"));
-}

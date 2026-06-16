@@ -126,8 +126,7 @@ pub mod write;
 :CUSTOM_ID: storage-model
 :END:
 
-The storage layer is strict about canonical =TKO_*= keys. Legacy =TK_*= keys
-are visible only to migration and lint helpers.
+The storage layer is strict about canonical =TKO_*= keys.
 
 #+begin_src rust :tangle src/storage.rs
 // Generated from tko.org. Do not edit by hand.
@@ -411,136 +410,6 @@ pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationReport {
-    pub path: PathBuf,
-    pub actions: Vec<MigrationAction>,
-    pub conflicts: Vec<MigrationConflict>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrationAction {
-    Rename {
-        legacy_key: String,
-        canonical_key: String,
-        value: String,
-    },
-    RemoveLegacy {
-        legacy_key: String,
-        canonical_key: String,
-        value: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationConflict {
-    pub legacy_key: String,
-    pub canonical_key: String,
-    pub legacy_value: String,
-    pub canonical_value: String,
-}
-
-pub fn migrate_legacy_properties(path: &Path, apply: bool) -> Result<MigrationReport> {
-    let text = fs::read_to_string(path)?;
-    let document = OrgDocument::parse(&text);
-    let mut report = MigrationReport {
-        path: path.to_path_buf(),
-        actions: Vec::new(),
-        conflicts: Vec::new(),
-    };
-
-    let Some(drawer) = document.drawer else {
-        return Ok(report);
-    };
-
-    let mut canonical_values = HashMap::new();
-    for entry in &drawer.entries {
-        if entry.key.starts_with("TKO_") {
-            canonical_values.insert(entry.key.as_str(), entry.value.as_str());
-        }
-    }
-
-    let mut lines = split_lines(&text);
-    let mut remove_lines = Vec::new();
-
-    for entry in &drawer.entries {
-        let Some(canonical_key) = canonical_key_for_legacy(&entry.key) else {
-            continue;
-        };
-
-        match canonical_values.get(canonical_key) {
-            None => {
-                report.actions.push(MigrationAction::Rename {
-                    legacy_key: entry.key.clone(),
-                    canonical_key: canonical_key.to_string(),
-                    value: entry.value.clone(),
-                });
-                if apply {
-                    let ending = line_ending(&lines[entry.line_index]);
-                    lines[entry.line_index] = format!(":{canonical_key}: {}{ending}", entry.value);
-                }
-            }
-            Some(canonical_value) if *canonical_value == entry.value => {
-                report.actions.push(MigrationAction::RemoveLegacy {
-                    legacy_key: entry.key.clone(),
-                    canonical_key: canonical_key.to_string(),
-                    value: entry.value.clone(),
-                });
-                if apply {
-                    remove_lines.push(entry.line_index);
-                }
-            }
-            Some(canonical_value) => {
-                report.conflicts.push(MigrationConflict {
-                    legacy_key: entry.key.clone(),
-                    canonical_key: canonical_key.to_string(),
-                    legacy_value: entry.value.clone(),
-                    canonical_value: (*canonical_value).to_string(),
-                });
-            }
-        }
-    }
-
-    if apply && (!report.actions.is_empty() || !remove_lines.is_empty()) {
-        remove_lines.sort_unstable();
-        remove_lines.dedup();
-        for line_index in remove_lines.into_iter().rev() {
-            lines.remove(line_index);
-        }
-        fs::write(path, lines.concat())?;
-    }
-
-    Ok(report)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LintFinding {
-    pub path: PathBuf,
-    pub line: usize,
-    pub code: &'static str,
-    pub message: String,
-}
-
-pub fn lint_legacy_property_keys(path: &Path) -> Result<Vec<LintFinding>> {
-    let text = fs::read_to_string(path)?;
-    let document = OrgDocument::parse(&text);
-    let Some(drawer) = document.drawer else {
-        return Ok(Vec::new());
-    };
-
-    Ok(drawer
-        .entries
-        .iter()
-        .filter(|entry| canonical_key_for_legacy(&entry.key).is_some())
-        .map(|entry| LintFinding {
-            path: path.to_path_buf(),
-            line: entry.line_index + 1,
-            code: "L004",
-            message: format!("legacy {} property key remains after migration", entry.key),
-        })
-        .collect())
-}
-
 #[derive(Debug, Clone)]
 struct OrgDocument<'a> {
     text: &'a str,
@@ -695,22 +564,6 @@ fn line_ending(line: &str) -> &'static str {
     }
 }
 
-fn canonical_key_for_legacy(key: &str) -> Option<&'static str> {
-    match key {
-        "TK_ID" => Some("TKO_ID"),
-        "TK_STATUS" => Some("TKO_STATUS"),
-        "TK_DEPS" => Some("TKO_DEPS"),
-        "TK_LINKS" => Some("TKO_LINKS"),
-        "TK_CREATED" => Some("TKO_CREATED"),
-        "TK_TYPE" => Some("TKO_TYPE"),
-        "TK_PRIORITY" => Some("TKO_PRIORITY"),
-        "TK_ASSIGNEE" => Some("TKO_ASSIGNEE"),
-        "TK_EXTERNAL_REF" => Some("TKO_EXTERNAL_REF"),
-        "TK_PARENT" => Some("TKO_PARENT"),
-        "TK_TAGS" => Some("TKO_TAGS"),
-        _ => None,
-    }
-}
 #+end_src
 
 ** Query DSL
@@ -1964,7 +1817,7 @@ fn trim_line(line: &str) -> &str {
 #+begin_src rust :tangle src/lint.rs
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, lint_legacy_property_keys};
+use crate::storage::TicketStore;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -2058,18 +1911,6 @@ pub fn lint_path(path: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     findings.extend(lint_semantic_headings(path, &text));
     findings.extend(lint_note_titles(path, &text));
-    findings.extend(
-        lint_legacy_property_keys(path)
-            .map_err(|error| LintError::new(error.to_string()))?
-            .into_iter()
-            .map(|finding| Finding {
-                path: finding.path,
-                line: finding.line,
-                code: finding.code,
-                severity: Severity::Failure,
-                message: finding.message,
-            }),
-    );
     Ok(findings)
 }
 
@@ -2204,7 +2045,7 @@ work.
 // Generated from tko.org. Do not edit by hand.
 
 use crate::read::Filters;
-use crate::storage::{TicketStore, migrate_legacy_properties};
+use crate::storage::TicketStore;
 use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::env;
@@ -2270,9 +2111,6 @@ enum Command {
     Lint(LintArgs),
     /// List note headings.
     Notes(IdArgs),
-    /// Migrate legacy TK_* properties to TKO_* properties.
-    #[command(name = "migrate-legacy-properties")]
-    MigrateLegacyProperties(MigrationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -2365,13 +2203,6 @@ struct LintArgs {
     id_or_path: Option<String>,
 }
 
-#[derive(Debug, Args)]
-struct MigrationArgs {
-    #[arg(long)]
-    apply: bool,
-    id_or_path: Option<PathBuf>,
-}
-
 impl Command {
     fn name(&self) -> &'static str {
         match self {
@@ -2396,7 +2227,6 @@ impl Command {
             Command::Query(_) => "query",
             Command::Lint(_) => "lint",
             Command::Notes(_) => "notes",
-            Command::MigrateLegacyProperties(_) => "migrate-legacy-properties",
         }
     }
 }
@@ -2424,7 +2254,6 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
-        Some(Command::MigrateLegacyProperties(args)) => run_migration(args),
         Some(Command::Create(args)) => {
             let cwd = env::current_dir().map_err(|error| error.to_string())?;
             let store = write_store(true)?;
@@ -2628,75 +2457,6 @@ fn run_lint(args: LintArgs) -> Result<(), String> {
         Ok(())
     }
 }
-
-fn run_migration(args: MigrationArgs) -> Result<(), String> {
-    let cwd = env::current_dir().map_err(|error| error.to_string())?;
-    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
-    let store = TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), false)
-        .map_err(|error| error.to_string())?;
-
-    let paths = if let Some(target) = args.id_or_path {
-        if target.exists() {
-            vec![target]
-        } else {
-            let id = target.to_string_lossy();
-            vec![store.resolve_id(&id).map_err(|error| error.to_string())?]
-        }
-    } else {
-        store.ticket_paths().map_err(|error| error.to_string())?
-    };
-
-    let mut conflict_count = 0usize;
-    for path in paths {
-        let report =
-            migrate_legacy_properties(&path, args.apply).map_err(|error| error.to_string())?;
-        for action in report.actions {
-            match action {
-                crate::storage::MigrationAction::Rename {
-                    legacy_key,
-                    canonical_key,
-                    value,
-                } => println!(
-                    "{}: rename {} -> {} ({})",
-                    report.path.display(),
-                    legacy_key,
-                    canonical_key,
-                    value
-                ),
-                crate::storage::MigrationAction::RemoveLegacy {
-                    legacy_key,
-                    canonical_key,
-                    value,
-                } => println!(
-                    "{}: remove {} matching {} ({})",
-                    report.path.display(),
-                    legacy_key,
-                    canonical_key,
-                    value
-                ),
-            }
-        }
-        for conflict in report.conflicts {
-            conflict_count += 1;
-            eprintln!(
-                "{}: conflict {}={} differs from {}={}",
-                report.path.display(),
-                conflict.legacy_key,
-                conflict.legacy_value,
-                conflict.canonical_key,
-                conflict.canonical_value
-            );
-        }
-    }
-
-    if conflict_count == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "legacy property migration found {conflict_count} conflict(s)"
-        ))
-    }
-}
 #+end_src
 
 ** Binary Entry Point
@@ -2804,42 +2564,6 @@ fn note_fetch_remains_explicitly_unimplemented() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not implemented: show --note"));
 }
-
-#[test]
-fn migration_command_reports_and_applies() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let tickets_dir = temp.path().join(".tickets");
-    std::fs::create_dir(&tickets_dir).expect("tickets dir");
-    let ticket_path = tickets_dir.join("sys-legacy.org");
-    std::fs::write(
-        &ticket_path,
-        ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Legacy\n",
-    )
-    .expect("write ticket");
-
-    let dry_run = Command::new(tko_bin())
-        .args(["migrate-legacy-properties"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert!(dry_run.status.success());
-    let stdout = String::from_utf8_lossy(&dry_run.stdout);
-    assert!(stdout.contains("rename TK_STATUS -> TKO_STATUS"));
-    let unchanged = std::fs::read_to_string(&ticket_path).expect("read ticket");
-    assert!(unchanged.contains(":TK_STATUS: open"));
-
-    let apply = Command::new(tko_bin())
-        .args(["migrate-legacy-properties", "--apply", "legacy"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert!(apply.status.success());
-    let migrated = std::fs::read_to_string(&ticket_path).expect("read ticket");
-    assert!(migrated.contains(":TKO_STATUS: open"));
-    assert!(!migrated.contains(":TK_STATUS: open"));
-}
 #+end_src
 
 #+begin_src rust :tangle tests/storage.rs
@@ -2849,8 +2573,8 @@ use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
-    MigrationAction, StorageError, TicketStore, discover_tickets_dir, format_list_value,
-    lint_legacy_property_keys, load_ticket, migrate_legacy_properties, parse_list_value,
+    StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
+    parse_list_value,
 };
 
 fn write(path: &Path, text: &str) {
@@ -2900,19 +2624,16 @@ fn loads_canonical_ticket_properties_and_body() {
 }
 
 #[test]
-fn missing_optional_properties_default_and_legacy_keys_are_ignored() {
+fn missing_canonical_properties_use_defaults() {
     let temp = tempdir().expect("tempdir");
     let tickets = temp.path().join(".tickets");
     fs::create_dir(&tickets).expect("tickets dir");
-    let path = tickets.join("sys-legacy.org");
-    write(
-        &path,
-        ":PROPERTIES:\n:TK_STATUS: closed\n:TK_PRIORITY: 0\n:END:\n\n* Legacy ticket\n",
-    );
+    let path = tickets.join("sys-defaults.org");
+    write(&path, ":PROPERTIES:\n:END:\n\n* Defaulted ticket\n");
 
     let ticket = load_ticket(&path).expect("load ticket");
 
-    assert_eq!(ticket.id, "sys-legacy");
+    assert_eq!(ticket.id, "sys-defaults");
     assert_eq!(ticket.properties.status, "open");
     assert_eq!(ticket.properties.priority, 2);
     assert!(ticket.properties.deps.is_empty());
@@ -2982,76 +2703,6 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
 }
 
-#[test]
-fn migration_dry_run_reports_without_writing_and_apply_renames() {
-    let temp = tempdir().expect("tempdir");
-    let path = temp.path().join("sys-legacy.org");
-    write(
-        &path,
-        ":PROPERTIES:\n:TK_STATUS: open\n:TK_TAGS: [repo/tko]\n:END:\n\n* Legacy\n",
-    );
-
-    let dry_run = migrate_legacy_properties(&path, false).expect("dry run");
-    assert_eq!(dry_run.actions.len(), 2);
-    assert_eq!(
-        dry_run.actions[0],
-        MigrationAction::Rename {
-            legacy_key: "TK_STATUS".to_string(),
-            canonical_key: "TKO_STATUS".to_string(),
-            value: "open".to_string(),
-        }
-    );
-    let unchanged = fs::read_to_string(&path).expect("read unchanged");
-    assert!(unchanged.contains(":TK_STATUS: open"));
-
-    let apply = migrate_legacy_properties(&path, true).expect("apply");
-    assert_eq!(apply.actions.len(), 2);
-    let migrated = fs::read_to_string(&path).expect("read migrated");
-    assert!(migrated.contains(":TKO_STATUS: open"));
-    assert!(migrated.contains(":TKO_TAGS: [repo/tko]"));
-    assert!(!migrated.contains(":TK_STATUS: open"));
-}
-
-#[test]
-fn migration_removes_matching_legacy_keys_and_reports_conflicts() {
-    let temp = tempdir().expect("tempdir");
-    let matching = temp.path().join("sys-matching.org");
-    write(
-        &matching,
-        ":PROPERTIES:\n:TKO_STATUS: open\n:TK_STATUS: open\n:END:\n\n* Matching\n",
-    );
-    let report = migrate_legacy_properties(&matching, true).expect("matching migration");
-    assert_eq!(report.actions.len(), 1);
-    let matching_text = fs::read_to_string(&matching).expect("read matching");
-    assert!(matching_text.contains(":TKO_STATUS: open"));
-    assert!(!matching_text.contains(":TK_STATUS: open\n"));
-
-    let conflict = temp.path().join("sys-conflict.org");
-    write(
-        &conflict,
-        ":PROPERTIES:\n:TKO_STATUS: open\n:TK_STATUS: closed\n:END:\n\n* Conflict\n",
-    );
-    let report = migrate_legacy_properties(&conflict, true).expect("conflict migration");
-    assert!(report.actions.is_empty());
-    assert_eq!(report.conflicts.len(), 1);
-    let conflict_text = fs::read_to_string(&conflict).expect("read conflict");
-    assert!(conflict_text.contains(":TKO_STATUS: open"));
-    assert!(conflict_text.contains(":TK_STATUS: closed"));
-}
-
-#[test]
-fn l004_reports_legacy_keys_in_active_property_drawer() {
-    let temp = tempdir().expect("tempdir");
-    let path = temp.path().join("sys-legacy.org");
-    write(&path, ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Legacy\n");
-
-    let findings = lint_legacy_property_keys(&path).expect("lint");
-
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].code, "L004");
-    assert_eq!(findings[0].line, 2);
-    assert!(findings[0].message.contains("TK_STATUS"));
-}
 #+end_src
 
 #+begin_src rust :tangle tests/read.rs
@@ -3531,13 +3182,13 @@ fn lint_warning_for_note_title_target_exits_successfully() {
 }
 
 #[test]
-fn lint_fails_duplicate_bad_level_long_note_and_legacy_key() {
+fn lint_fails_duplicate_bad_level_and_long_note() {
     let fixture = Fixture::new();
     let title = "x".repeat(73);
     fixture.write(
         "sys-bad",
         &format!(
-            ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Bad\n\n*** Description\n\n** Description\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"
+            "* Bad\n\n*** Description\n\n** Description\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"
         ),
     );
 
@@ -3548,7 +3199,6 @@ fn lint_fails_duplicate_bad_level_long_note_and_legacy_key() {
     assert!(stdout.contains("L001 duplicate semantic heading"));
     assert!(stdout.contains("L002 semantic heading must be level-2"));
     assert!(stdout.contains("L003 note title exceeds hard limit"));
-    assert!(stdout.contains("L004 legacy TK_STATUS property key remains"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("lint failed"));
 }

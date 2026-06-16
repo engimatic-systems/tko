@@ -69,13 +69,13 @@ fn lint_warning_for_note_title_target_exits_successfully() {
 }
 
 #[test]
-fn lint_fails_duplicate_bad_level_long_note_and_legacy_key() {
+fn lint_fails_duplicate_bad_level_and_long_note() {
     let fixture = Fixture::new();
     let title = "x".repeat(73);
     fixture.write(
         "sys-bad",
         &format!(
-            ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Bad\n\n*** Description\n\n** Description\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"
+            "* Bad\n\n*** Description\n\n** Description\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"
         ),
     );
 
@@ -86,7 +86,6 @@ fn lint_fails_duplicate_bad_level_long_note_and_legacy_key() {
     assert!(stdout.contains("L001 duplicate semantic heading"));
     assert!(stdout.contains("L002 semantic heading must be level-2"));
     assert!(stdout.contains("L003 note title exceeds hard limit"));
-    assert!(stdout.contains("L004 legacy TK_STATUS property key remains"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("lint failed"));
 }
