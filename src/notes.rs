@@ -46,11 +46,12 @@ pub fn list_notes(store: &TicketStore, id: &str) -> Result<String> {
     let ticket = store
         .load(id)
         .map_err(|error| NotesError::new(error.to_string()))?;
-    Ok(finish_lines(
-        note_entries(&ticket.body)
-            .into_iter()
-            .map(|entry| entry.heading),
-    ))
+    let mut output = String::new();
+    for entry in note_entries(&ticket.body) {
+        output.push_str(entry.heading);
+        output.push('\n');
+    }
+    Ok(output)
 }
 
 pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<String> {
@@ -64,13 +65,20 @@ pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<Stri
 
     match matches.len() {
         0 => Err(NotesError::new(format!("note not found: {note_match}"))),
-        1 => Ok(ensure_trailing_newline(matches[0].subtree.to_string())),
+        1 => {
+            let mut output = matches[0].subtree.to_string();
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            Ok(output)
+        }
         _ => {
-            let candidates = finish_lines(
-                matches
-                    .iter()
-                    .map(|entry| format!("candidate: {}", entry.heading)),
-            );
+            let mut candidates = String::new();
+            for entry in &matches {
+                candidates.push_str("candidate: ");
+                candidates.push_str(entry.heading);
+                candidates.push('\n');
+            }
             Err(NotesError::new(format!(
                 "ambiguous note match: {note_match}\n{candidates}"
             )))
@@ -156,26 +164,6 @@ fn line_spans(text: &str) -> Vec<Line<'_>> {
             span
         })
         .collect()
-}
-
-fn finish_lines<I, S>(lines: I) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let mut output = String::new();
-    for line in lines {
-        output.push_str(line.as_ref());
-        output.push('\n');
-    }
-    output
-}
-
-fn ensure_trailing_newline(mut text: String) -> String {
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
 }
 
 fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
