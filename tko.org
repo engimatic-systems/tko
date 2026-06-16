@@ -1276,6 +1276,22 @@ fn finish_lines(lines: Vec<String>) -> String {
 :CUSTOM_ID: write-commands
 :END:
 
+Write commands mutate the ticket store. Public functions expose the command
+surface; private helpers keep validation, id resolution, and file rewriting
+shared.
+
+The invariants are:
+
+- resolve partial ticket ids to filename stems before mutation
+- reject self-dependencies and self-links
+- preserve stable Org shape for created tickets and notes
+- make add/remove operations idempotent
+
+*** Write model
+
+The module starts with its error type and the explicit input contract for ticket
+creation. Optional fields are written only when present and non-empty.
+
 #+begin_src rust :tangle src/write.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -1324,6 +1340,21 @@ pub struct CreateTicket {
     pub parent: Option<String>,
     pub tags: Vec<String>,
 }
+#+end_src
+
+*** Create ticket
+
+#+begin_example
+create(store, cwd, input):
+  require a non-empty title
+  validate type and priority
+  allocate an unused id from cwd-derived prefix and time-derived suffix
+  resolve optional parent id
+  write .tickets/<id>.org with TKO_* properties and requested body sections
+  return id
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
     let title = input.title.trim();
@@ -1380,6 +1411,19 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(id)
 }
+#+end_src
+
+*** Status
+
+#+begin_example
+set_status(store, id, status):
+  require status in the canonical status set
+  resolve partial id to a ticket stem
+  replace TKO_STATUS in the target property drawer
+  report the updated status
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn set_status(store: &TicketStore, id: &str, status: &str) -> Result<String> {
     validate_status(status)?;
@@ -1389,6 +1433,20 @@ pub fn set_status(store: &TicketStore, id: &str, status: &str) -> Result<String>
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(format!("Updated {resolved} -> {status}\n"))
 }
+#+end_src
+
+*** Dependencies
+
+#+begin_example
+add_dependency/remove_dependency(store, id, dep_id):
+  resolve both ticket ids
+  reject self-relations
+  mutate TKO_DEPS as a set-like list
+  always rewrite the formatted property value
+  report whether the requested edge changed anything
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn add_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<String> {
     mutate_relation(
@@ -1411,6 +1469,19 @@ pub fn remove_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<
         Mutation::Remove,
     )
 }
+#+end_src
+
+*** Links
+
+#+begin_example
+add_link/remove_link(store, id, target_id):
+  resolve both ticket ids
+  reject self-links
+  mutate both tickets' TKO_LINKS lists symmetrically
+  report whether either side changed
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn add_link(store: &TicketStore, id: &str, target_id: &str) -> Result<String> {
     mutate_link(store, id, target_id, Mutation::Add)
@@ -1419,6 +1490,19 @@ pub fn add_link(store: &TicketStore, id: &str, target_id: &str) -> Result<String
 pub fn remove_link(store: &TicketStore, id: &str, target_id: &str) -> Result<String> {
     mutate_link(store, id, target_id, Mutation::Remove)
 }
+#+end_src
+
+*** Tags
+
+#+begin_example
+add_tags/remove_tags(store, id, tags):
+  resolve the ticket id
+  mutate TKO_TAGS as a set-like list
+  rewrite the formatted property value
+  report changed tags, or unchanged tags if nothing changed
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn add_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String> {
     mutate_tags(store, id, tags, Mutation::Add)
@@ -1427,6 +1511,20 @@ pub fn add_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String
 pub fn remove_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<String> {
     mutate_tags(store, id, tags, Mutation::Remove)
 }
+#+end_src
+
+*** Notes
+
+#+begin_example
+add_note(store, id, title, body):
+  resolve partial id to a ticket stem
+  require explicit non-empty one-line title no longer than 72 characters
+  expand escaped newlines in optional body
+  append a timestamped *** note under ** Notes
+  create ** Notes if absent
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) -> Result<String> {
     let resolved = resolved_id(store, id)?;
@@ -1464,6 +1562,31 @@ pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) 
     fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
     Ok(format!("Note added to {resolved}\n"))
 }
+#+end_src
+
+*** Relation mutation helpers
+
+#+begin_example
+mutate_relation:
+  resolve left and right ids
+  reject left == right
+  pick the requested list property
+  add or remove the target id
+  persist the list and produce an idempotent command message
+
+mutate_link:
+  resolve both ids
+  reject left == right
+  add or remove each side from the other side's TKO_LINKS
+  persist both files and produce an idempotent command message
+
+mutate_tags:
+  mutate each requested tag in TKO_TAGS
+  persist once
+  report changed values when present, otherwise unchanged values
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mutation {
@@ -1640,6 +1763,18 @@ fn relation_message(
         }
     }
 }
+#+end_src
+
+*** Note insertion
+
+#+begin_example
+append_note(document, note):
+  if ** Notes exists, insert before the next top-level or second-level heading
+  otherwise append a ** Notes section to the document
+  preserve existing line endings enough to avoid joining headings and notes
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 fn append_note(document: String, note: &str) -> String {
     let mut lines = split_inclusive_lines(&document);
@@ -1674,6 +1809,29 @@ fn append_note(document: String, note: &str) -> String {
     lines.push(note.to_string());
     lines.concat()
 }
+#+end_src
+
+*** Formatting and id helpers
+
+#+begin_example
+push_property:
+  append one property drawer line
+
+push_section:
+  skip absent or empty bodies
+  expand escaped newlines
+  write a second-level Org section
+
+resolved_id:
+  let storage resolve partial ids
+  return the resolved filename stem
+
+unique_id:
+  combine cwd-derived prefix with short time-derived suffix
+  retry if the generated file already exists
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
 
 fn push_property(text: &mut String, key: &str, value: &str) {
     text.push_str(&format!(":{key}: {value}\n"));
