@@ -129,6 +129,68 @@ install-smoke:
 	tmp="$$(mktemp -d)"; $(MAKE) install INSTALL_ROOT="$$tmp" CARGO_INSTALL_FLAGS="--locked --debug"; "$$tmp/bin/tko" help >/dev/null
 #+end_src
 
+** Legacy Property Migration Snippet
+:PROPERTIES:
+:CUSTOM_ID: legacy-property-migration-script
+:END:
+
+This is a one-shot repository migration helper, not runtime compatibility. It is
+kept untangled because it should disappear after applicable ticket stores have
+been migrated.
+
+#+begin_example
+migrate-tk-properties.sh TICKETS_DIR:
+  require exactly one existing tickets directory
+  scan non-hidden *.org files directly under that directory
+  rewrite property drawer keys beginning exactly :TK_ to :TKO_
+  leave existing :TKO_ keys unchanged
+  print each migrated file and a final count
+#+end_example
+
+#+begin_src sh
+#!/bin/sh
+set -eu
+
+usage() {
+    echo "usage: $0 TICKETS_DIR" >&2
+    exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+
+tickets_dir=$1
+if [ ! -d "$tickets_dir" ]; then
+    echo "not a directory: $tickets_dir" >&2
+    exit 1
+fi
+
+migrated=0
+
+for ticket_file in "$tickets_dir"/*.org; do
+    [ -e "$ticket_file" ] || continue
+    name=${ticket_file##*/}
+    case "$name" in
+        .*) continue ;;
+    esac
+    [ -f "$ticket_file" ] || continue
+
+    if ! grep -Eq '^:TK_[A-Z0-9_]*:' "$ticket_file"; then
+        continue
+    fi
+
+    tmp=$(mktemp "${ticket_file}.tmp.XXXXXX")
+    awk '
+        /^:TK_[A-Z0-9_]*:/ { sub(/^:TK_/, ":TKO_") }
+        { print }
+    ' "$ticket_file" > "$tmp"
+    mv "$tmp" "$ticket_file"
+    migrated=$((migrated + 1))
+    echo "migrated $ticket_file"
+done
+
+echo "migrated $migrated file(s)"
+#+end_src
+
 ** Install And Switch Runbook
 :PROPERTIES:
 :CUSTOM_ID: install-and-switch-runbook
