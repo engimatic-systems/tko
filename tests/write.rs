@@ -242,6 +242,20 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     assert!(text.contains("] Title line\nBody line\n"));
 
     assert_eq!(
+        fixture.stdout(&[
+            "add-note",
+            "sys-a",
+            "--title",
+            "Escaped body",
+            "--body",
+            "Line one\\nLine two",
+        ]),
+        "Note added to sys-a\n"
+    );
+    let text = fixture.read("sys-a");
+    assert!(text.contains("] Escaped body\nLine one\nLine two\n"));
+
+    assert_eq!(
         fixture.stdout(&["add-note", "sys-b", "--title", "Title only"]),
         "Note added to sys-b\n"
     );
@@ -252,4 +266,9 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--title"));
+
+    let output = fixture.run(&["add-note", "sys-a", "--title", "Bad\\nTitle"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("escaped newlines"));
 }

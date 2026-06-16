@@ -155,10 +155,14 @@ pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) 
         .resolve_id(&resolved)
         .map_err(|error| WriteError::new(error.to_string()))?;
     let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
-    let title = expand_escaped_newlines(title);
     let title = title.trim();
     if title.is_empty() {
         return Err(WriteError::new("note title is required"));
+    }
+    if title.contains("\\n") {
+        return Err(WriteError::new(
+            "note title must not contain escaped newlines",
+        ));
     }
     if title.contains('\n') {
         return Err(WriteError::new("note title must be one line"));

@@ -1434,10 +1434,14 @@ pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) 
         .resolve_id(&resolved)
         .map_err(|error| WriteError::new(error.to_string()))?;
     let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
-    let title = expand_escaped_newlines(title);
     let title = title.trim();
     if title.is_empty() {
         return Err(WriteError::new("note title is required"));
+    }
+    if title.contains("\\n") {
+        return Err(WriteError::new(
+            "note title must not contain escaped newlines",
+        ));
     }
     if title.contains('\n') {
         return Err(WriteError::new("note title must be one line"));
@@ -2900,6 +2904,20 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     assert!(text.contains("] Title line\nBody line\n"));
 
     assert_eq!(
+        fixture.stdout(&[
+            "add-note",
+            "sys-a",
+            "--title",
+            "Escaped body",
+            "--body",
+            "Line one\\nLine two",
+        ]),
+        "Note added to sys-a\n"
+    );
+    let text = fixture.read("sys-a");
+    assert!(text.contains("] Escaped body\nLine one\nLine two\n"));
+
+    assert_eq!(
         fixture.stdout(&["add-note", "sys-b", "--title", "Title only"]),
         "Note added to sys-b\n"
     );
@@ -2910,5 +2928,10 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--title"));
+
+    let output = fixture.run(&["add-note", "sys-a", "--title", "Bad\\nTitle"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("escaped newlines"));
 }
 #+end_src
