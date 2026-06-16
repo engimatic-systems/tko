@@ -65,7 +65,6 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
 
     let id = fixture.stdout(&[
         "create",
-        "Ignored",
         "Created ticket",
         "--description",
         "Line one\\nLine two",
@@ -101,6 +100,30 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
     assert!(text.contains("** Description\n\nLine one\nLine two\n"));
     assert!(text.contains("** Scope\n\nSmall\n"));
     assert!(!text.contains(":TK_"));
+
+    let id = fixture.stdout(&["create", "No assignee"]);
+    let text = fixture.read(id.trim());
+    assert!(!text.contains(":TKO_ASSIGNEE:"));
+
+    let output = fixture.run(&["create", ""]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ticket title is required"));
+}
+
+#[test]
+fn init_creates_ticket_storage_explicitly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(tko_bin())
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .expect("run init");
+
+    assert!(output.status.success());
+    assert!(temp.path().join(".tickets").is_dir());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Initialized"));
 }
 
 #[test]

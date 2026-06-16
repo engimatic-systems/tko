@@ -6,7 +6,6 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, WriteError>;
@@ -48,9 +47,12 @@ pub struct CreateTicket {
 }
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("ticket title is required"));
+    }
     validate_type(&input.ticket_type)?;
     validate_priority(input.priority)?;
-    fs::create_dir_all(store.tickets_dir()).map_err(|error| WriteError::new(error.to_string()))?;
 
     let id = unique_id(store, cwd)?;
     let parent = input
@@ -58,7 +60,6 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         .as_ref()
         .map(|parent| resolved_id(store, parent))
         .transpose()?;
-    let assignee = input.assignee.or_else(git_user_name);
 
     let mut text = String::new();
     text.push_str(":PROPERTIES:\n");
@@ -73,7 +74,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = assignee.filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input.assignee.filter(|value| !value.trim().is_empty()) {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
     if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
@@ -86,7 +87,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         push_property(&mut text, "TKO_TAGS", &format_list_value(&input.tags));
     }
     text.push_str(":END:\n\n");
-    text.push_str(&format!("* {}\n", input.title));
+    text.push_str(&format!("* {title}\n"));
     push_section(&mut text, "Description", input.description.as_deref());
     push_section(&mut text, "Scope", input.scope.as_deref());
     push_section(&mut text, "Design", input.design.as_deref());
@@ -464,20 +465,6 @@ fn id_suffix() -> String {
         value /= ALPHABET.len() as u128;
     }
     suffix
-}
-
-fn git_user_name() -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "user.name"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn validate_status(status: &str) -> Result<()> {

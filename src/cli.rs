@@ -25,6 +25,8 @@ pub struct Cli {
 enum Command {
     /// Print command help.
     Help,
+    /// Initialize ticket storage.
+    Init,
     /// Create a ticket.
     Create(CreateArgs),
     /// Set status to in_progress.
@@ -71,7 +73,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct CreateArgs {
-    title: Vec<String>,
+    title: String,
     #[arg(short = 'd', long)]
     description: Option<String>,
     #[arg(long)]
@@ -195,6 +197,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Help => "help",
+            Command::Init => "init",
             Command::Create(_) => "create",
             Command::Start(_) => "start",
             Command::Block(_) => "block",
@@ -242,9 +245,14 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Init) => {
+            let store = write_store(true)?;
+            println!("Initialized {}", store.tickets_dir().display());
+            Ok(())
+        }
         Some(Command::Create(args)) => {
             let cwd = env::current_dir().map_err(|error| error.to_string())?;
-            let store = write_store(true)?;
+            let store = write_store(false)?;
             let id = crate::write::create(&store, &cwd, create_ticket(args))
                 .map_err(|error| error.to_string())?;
             println!("{id}");
@@ -369,12 +377,7 @@ fn write_store(create_if_missing: bool) -> Result<TicketStore, String> {
 
 fn create_ticket(args: CreateArgs) -> CreateTicket {
     CreateTicket {
-        title: args
-            .title
-            .last()
-            .cloned()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| "Untitled".to_string()),
+        title: args.title,
         description: args.description,
         scope: args.scope,
         design: args.design,

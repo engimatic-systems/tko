@@ -1285,7 +1285,6 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, WriteError>;
@@ -1327,9 +1326,12 @@ pub struct CreateTicket {
 }
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("ticket title is required"));
+    }
     validate_type(&input.ticket_type)?;
     validate_priority(input.priority)?;
-    fs::create_dir_all(store.tickets_dir()).map_err(|error| WriteError::new(error.to_string()))?;
 
     let id = unique_id(store, cwd)?;
     let parent = input
@@ -1337,7 +1339,6 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         .as_ref()
         .map(|parent| resolved_id(store, parent))
         .transpose()?;
-    let assignee = input.assignee.or_else(git_user_name);
 
     let mut text = String::new();
     text.push_str(":PROPERTIES:\n");
@@ -1352,7 +1353,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = assignee.filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input.assignee.filter(|value| !value.trim().is_empty()) {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
     if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
@@ -1365,7 +1366,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         push_property(&mut text, "TKO_TAGS", &format_list_value(&input.tags));
     }
     text.push_str(":END:\n\n");
-    text.push_str(&format!("* {}\n", input.title));
+    text.push_str(&format!("* {title}\n"));
     push_section(&mut text, "Description", input.description.as_deref());
     push_section(&mut text, "Scope", input.scope.as_deref());
     push_section(&mut text, "Design", input.design.as_deref());
@@ -1745,20 +1746,6 @@ fn id_suffix() -> String {
     suffix
 }
 
-fn git_user_name() -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "user.name"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn validate_status(status: &str) -> Result<()> {
     if matches!(status, "open" | "in_progress" | "blocked" | "closed") {
         Ok(())
@@ -1840,6 +1827,8 @@ pub struct Cli {
 enum Command {
     /// Print command help.
     Help,
+    /// Initialize ticket storage.
+    Init,
     /// Create a ticket.
     Create(CreateArgs),
     /// Set status to in_progress.
@@ -1886,7 +1875,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct CreateArgs {
-    title: Vec<String>,
+    title: String,
     #[arg(short = 'd', long)]
     description: Option<String>,
     #[arg(long)]
@@ -2010,6 +1999,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::Help => "help",
+            Command::Init => "init",
             Command::Create(_) => "create",
             Command::Start(_) => "start",
             Command::Block(_) => "block",
@@ -2057,9 +2047,14 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
+        Some(Command::Init) => {
+            let store = write_store(true)?;
+            println!("Initialized {}", store.tickets_dir().display());
+            Ok(())
+        }
         Some(Command::Create(args)) => {
             let cwd = env::current_dir().map_err(|error| error.to_string())?;
-            let store = write_store(true)?;
+            let store = write_store(false)?;
             let id = crate::write::create(&store, &cwd, create_ticket(args))
                 .map_err(|error| error.to_string())?;
             println!("{id}");
@@ -2184,12 +2179,7 @@ fn write_store(create_if_missing: bool) -> Result<TicketStore, String> {
 
 fn create_ticket(args: CreateArgs) -> CreateTicket {
     CreateTicket {
-        title: args
-            .title
-            .last()
-            .cloned()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| "Untitled".to_string()),
+        title: args.title,
         description: args.description,
         scope: args.scope,
         design: args.design,
@@ -2280,6 +2270,7 @@ fn root_help_lists_command_surface() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("minimal org-mode ticket system"));
+    assert!(stdout.contains("init"));
     assert!(stdout.contains("create"));
     assert!(stdout.contains("ready"));
     assert!(stdout.contains("blocked"));
@@ -2732,7 +2723,6 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
 
     let id = fixture.stdout(&[
         "create",
-        "Ignored",
         "Created ticket",
         "--description",
         "Line one\\nLine two",
@@ -2768,6 +2758,30 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
     assert!(text.contains("** Description\n\nLine one\nLine two\n"));
     assert!(text.contains("** Scope\n\nSmall\n"));
     assert!(!text.contains(":TK_"));
+
+    let id = fixture.stdout(&["create", "No assignee"]);
+    let text = fixture.read(id.trim());
+    assert!(!text.contains(":TKO_ASSIGNEE:"));
+
+    let output = fixture.run(&["create", ""]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ticket title is required"));
+}
+
+#[test]
+fn init_creates_ticket_storage_explicitly() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(tko_bin())
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .expect("run init");
+
+    assert!(output.status.success());
+    assert!(temp.path().join(".tickets").is_dir());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Initialized"));
 }
 
 #[test]
