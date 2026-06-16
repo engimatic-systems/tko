@@ -45,17 +45,19 @@ pub struct Finding {
     pub message: String,
 }
 
-impl Finding {
-    pub fn format(&self) -> String {
+impl fmt::Display for Finding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.severity {
-            Severity::Warning => format!(
+            Severity::Warning => write!(
+                formatter,
                 "{}:{}: {} warning: {}",
                 self.path.display(),
                 self.line,
                 self.code,
                 self.message
             ),
-            Severity::Failure => format!(
+            Severity::Failure => write!(
+                formatter,
                 "{}:{}: {} {}",
                 self.path.display(),
                 self.line,
@@ -68,24 +70,24 @@ impl Finding {
 
 pub fn lint_store(store: &TicketStore) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
-    for path in store
+    let paths = store
         .ticket_paths()
-        .map_err(|error| LintError::new(error.to_string()))?
-    {
-        findings.extend(lint_path(&path)?);
+        .map_err(|error| LintError::new(error.to_string()))?;
+    for path in paths {
+        let ticket_findings = lint_path(&path)?;
+        findings.extend(ticket_findings);
     }
     Ok(findings)
 }
 
-pub fn lint_id_or_path(store: &TicketStore, id_or_path: &str) -> Result<Vec<Finding>> {
-    let path = PathBuf::from(id_or_path);
+pub fn resolve_id_or_path(store: &TicketStore, id_or_path: &str) -> Result<PathBuf> {
+    let path = Path::new(id_or_path);
     if path.exists() {
-        lint_path(&path)
+        Ok(path.to_path_buf())
     } else {
-        let path = store
+        store
             .resolve_id(id_or_path)
-            .map_err(|error| LintError::new(error.to_string()))?;
-        lint_path(&path)
+            .map_err(|error| LintError::new(error.to_string()))
     }
 }
 
@@ -105,7 +107,7 @@ pub fn has_failures(findings: &[Finding]) -> bool {
 
 fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut seen: HashMap<&'static str, usize> = HashMap::new();
     for (index, line) in text.lines().enumerate() {
         let Some((level, title)) = org_heading(line) else {
             continue;
@@ -122,7 +124,7 @@ fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
                 message: format!("semantic heading must be level-2 (**): {canonical}"),
             });
         }
-        if let Some(first_line) = seen.insert(canonical.to_string(), index + 1) {
+        if let Some(first_line) = seen.insert(canonical, index + 1) {
             findings.push(Finding {
                 path: path.to_path_buf(),
                 line: index + 1,
@@ -139,66 +141,68 @@ fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
 
 fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let lines = text.lines().collect::<Vec<_>>();
-    let mut index = 0usize;
-    while index < lines.len() {
-        let Some((2, title)) = org_heading(lines[index]) else {
-            index += 1;
-            continue;
-        };
-        if !title.trim().eq_ignore_ascii_case("Notes") {
-            index += 1;
-            continue;
-        }
-        index += 1;
-        while index < lines.len() {
-            match org_heading(lines[index]) {
-                Some((level, _)) if level <= 2 => break,
-                Some((3, note_title)) => {
-                    let title = note_title_after_timestamp(note_title);
-                    let length = title.chars().count();
-                    if length > 72 {
-                        findings.push(Finding {
-                            path: path.to_path_buf(),
-                            line: index + 1,
-                            code: "L003",
-                            severity: Severity::Failure,
-                            message: format!("note title exceeds hard limit: {length} > 72"),
-                        });
-                    } else if length > 50 {
-                        findings.push(Finding {
-                            path: path.to_path_buf(),
-                            line: index + 1,
-                            code: "L003",
-                            severity: Severity::Warning,
-                            message: format!("note title exceeds target length: {length} > 50"),
-                        });
-                    }
-                }
-                _ => {}
+    let mut in_notes = false;
+    for (index, line) in text.lines().enumerate() {
+        match org_heading(line) {
+            Some((2, title)) => {
+                in_notes = title.trim().eq_ignore_ascii_case("Notes");
             }
-            index += 1;
+            Some((level, _)) if level < 2 => {
+                in_notes = false;
+            }
+            Some((3, note_title)) if in_notes => {
+                let title = note_title_after_timestamp(note_title);
+                let length = title.chars().count();
+                if length > 72 {
+                    findings.push(Finding {
+                        path: path.to_path_buf(),
+                        line: index + 1,
+                        code: "L003",
+                        severity: Severity::Failure,
+                        message: format!("note title exceeds hard limit: {length} > 72"),
+                    });
+                } else if length > 50 {
+                    findings.push(Finding {
+                        path: path.to_path_buf(),
+                        line: index + 1,
+                        code: "L003",
+                        severity: Severity::Warning,
+                        message: format!("note title exceeds target length: {length} > 50"),
+                    });
+                }
+            }
+            _ => {}
         }
     }
     findings
 }
 
 fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let stars = line.chars().take_while(|ch| *ch == '*').count();
-    if stars == 0 || !line.chars().nth(stars).is_some_and(|ch| ch == ' ') {
+    let bytes = line.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
         return None;
     }
     Some((stars, line[stars + 1..].trim_end()))
 }
 
 fn semantic_heading(title: &str) -> Option<&'static str> {
-    match title.trim().to_ascii_lowercase().as_str() {
-        "description" => Some("Description"),
-        "scope" => Some("Scope"),
-        "design" => Some("Design"),
-        "acceptance criteria" => Some("Acceptance Criteria"),
-        "notes" => Some("Notes"),
-        _ => None,
+    let title = title.trim();
+    if title.eq_ignore_ascii_case("description") {
+        Some("Description")
+    } else if title.eq_ignore_ascii_case("scope") {
+        Some("Scope")
+    } else if title.eq_ignore_ascii_case("design") {
+        Some("Design")
+    } else if title.eq_ignore_ascii_case("acceptance criteria") {
+        Some("Acceptance Criteria")
+    } else if title.eq_ignore_ascii_case("notes") {
+        Some("Notes")
+    } else {
+        None
     }
 }
 

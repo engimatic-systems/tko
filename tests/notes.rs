@@ -129,7 +129,7 @@ fn add_note_refuses_overlong_title() {
     fixture.write("sys-notes", "* Ticket\n");
     let title = "x".repeat(73);
 
-    let output = fixture.run(&["add-note", "sys-notes", &title]);
+    let output = fixture.run(&["add-note", "sys-notes", "--title", &title]);
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
