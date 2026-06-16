@@ -39,21 +39,6 @@ fn help_command_prints_help() {
 }
 
 #[test]
-fn known_commands_parse_but_remain_stubbed() {
-    let cases: &[(&[&str], &str)] = &[(&["notes", "sys-ywp7"], "notes")];
-
-    for (args, command_name) in cases {
-        let output = run(args);
-        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!("not implemented: {command_name}")),
-            "args: {args:?}, stderr: {stderr}"
-        );
-    }
-}
-
-#[test]
 fn unknown_flags_are_usage_errors() {
     let output = run(&["ready", "--mystery"]);
 
@@ -63,19 +48,16 @@ fn unknown_flags_are_usage_errors() {
 }
 
 #[test]
-fn note_fetch_remains_explicitly_unimplemented() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let tickets_dir = temp.path().join(".tickets");
-    std::fs::create_dir(&tickets_dir).expect("tickets dir");
-    std::fs::write(tickets_dir.join("sys-ywp7.org"), "* Ticket\n").expect("write ticket");
+fn help_documents_note_and_lint_surfaces() {
+    let show = run(&["show", "--help"]);
+    assert!(show.status.success());
+    let show_help = String::from_utf8_lossy(&show.stdout);
+    assert!(show_help.contains("--note"));
+    assert!(show_help.contains("Print exactly one matching note subtree"));
 
-    let output = Command::new(tko_bin())
-        .args(["show", "sys-ywp7", "--note", "Spec"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not implemented: show --note"));
+    let lint = run(&["lint", "--help"]);
+    assert!(lint.status.success());
+    let lint_help = String::from_utf8_lossy(&lint.stdout);
+    assert!(lint_help.contains("L003"));
+    assert!(lint_help.contains("note-title"));
 }

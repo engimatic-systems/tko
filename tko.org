@@ -26,6 +26,7 @@ Generated files in this scaffold:
 - =src/read.rs=
 - =src/write.rs=
 - =src/lint.rs=
+- =src/notes.rs=
 - =src/cli.rs=
 - =src/main.rs=
 - =tests/cli.rs=
@@ -33,6 +34,7 @@ Generated files in this scaffold:
 - =tests/read.rs=
 - =tests/write.rs=
 - =tests/lint.rs=
+- =tests/notes.rs=
 
 * Project Files
 :PROPERTIES:
@@ -86,7 +88,7 @@ tempfile = "3.23"
 CARGO ?= cargo
 EMACS ?= emacs
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
 
 .PHONY: tangle check test
 
@@ -116,6 +118,7 @@ test:
 
 pub mod cli;
 pub mod lint;
+pub mod notes;
 pub mod query;
 pub mod read;
 pub mod storage;
@@ -2236,6 +2239,260 @@ fn note_title_after_timestamp(note_title: &str) -> &str {
 }
 #+end_src
 
+** Note Browsing
+:PROPERTIES:
+:CUSTOM_ID: note-browsing
+:END:
+
+Backfill guidance for existing tickets:
+
+1. Run =tko lint= after migrating ticket properties.
+2. For each =L003= warning or failure, keep the timestamped heading short and
+   move overflow prose into that note's body.
+3. Treat warning titles over 50 characters as cleanup candidates.
+4. Treat failure titles over 72 characters as required cleanup before relying on
+   new =add-note= behavior.
+5. Timestamp-only notes are valid; do not invent titles solely to satisfy lint.
+
+*** Note model
+
+#+begin_example
+NoteEntry:
+  borrows the printable heading text from the ticket body
+  borrows title text without timestamp
+  borrows optional timestamp text
+  borrows the full *** note subtree for show --note
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
+// Generated from tko.org. Do not edit by hand.
+
+use crate::storage::TicketStore;
+use std::error::Error;
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, NotesError>;
+
+#[derive(Debug)]
+pub struct NotesError {
+    message: String,
+}
+
+impl NotesError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for NotesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for NotesError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NoteEntry<'a> {
+    heading: &'a str,
+    title: &'a str,
+    timestamp: Option<&'a str>,
+    subtree: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Line<'a> {
+    start: usize,
+    end: usize,
+    text: &'a str,
+}
+#+end_src
+
+*** Note commands
+
+#+begin_example
+list_notes(store, id):
+  load the ticket by id
+  extract note entries from the ticket body
+  print note headings in document order
+
+show_note(store, id, note_match):
+  load the ticket by id
+  extract note entries from the ticket body
+  ASCII-case-insensitively match displayed note heading text
+  print exactly one matching subtree
+  fail with candidate headings when the match is ambiguous
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
+
+pub fn list_notes(store: &TicketStore, id: &str) -> Result<String> {
+    let ticket = store
+        .load(id)
+        .map_err(|error| NotesError::new(error.to_string()))?;
+    let mut output = String::new();
+    for entry in note_entries(&ticket.body) {
+        output.push_str(entry.heading);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<String> {
+    let ticket = store
+        .load(id)
+        .map_err(|error| NotesError::new(error.to_string()))?;
+    let matches = note_entries(&ticket.body)
+        .into_iter()
+        .filter(|entry| contains_ascii_case_insensitive(entry.heading, note_match))
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        0 => Err(NotesError::new(format!("note not found: {note_match}"))),
+        1 => Ok(matches[0].subtree.to_string()),
+        _ => {
+            let mut candidates = String::new();
+            for entry in &matches {
+                candidates.push_str("candidate: ");
+                candidates.push_str(entry.heading);
+                candidates.push('\n');
+            }
+            Err(NotesError::new(format!(
+                "ambiguous note match: {note_match}\n{candidates}"
+            )))
+        }
+    }
+}
+#+end_src
+
+*** Note extraction
+
+#+begin_example
+note_entries(body):
+  find the ticket-level ** Notes section
+  scan from ** Notes to the end of the file
+  treat each level-3 heading as one note entry
+  include deeper child headings in that note's subtree
+  split the heading into optional timestamp and title
+  keep note fields as spans into the original ticket body
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
+
+fn note_entries(body: &str) -> Vec<NoteEntry<'_>> {
+    let lines = line_spans(body);
+    let Some(notes_index) = lines.iter().position(|line| {
+        heading(line.text)
+            .is_some_and(|(level, title)| level == 2 && title.eq_ignore_ascii_case("Notes"))
+    }) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    let mut index = notes_index + 1;
+    while index < lines.len() {
+        let Some((3, heading_text)) = heading(lines[index].text) else {
+            index += 1;
+            continue;
+        };
+        let start = index;
+        let end = lines
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find_map(|(candidate, line)| match heading(line.text) {
+                Some((level, _)) if level <= 3 => Some(candidate),
+                _ => None,
+            })
+            .unwrap_or(lines.len());
+        let subtree = &body[lines[start].start..lines[end - 1].end];
+        let (timestamp, title) = split_timestamp_title(heading_text);
+        entries.push(NoteEntry {
+            heading: heading_text,
+            title,
+            timestamp,
+            subtree,
+        });
+        index = end;
+    }
+    entries
+}
+#+end_src
+
+*** Note parsing helpers
+
+#+begin_example
+split_timestamp_title(heading_text):
+  strip a leading [timestamp] prefix when present
+  return optional timestamp and remaining title
+
+heading(line):
+  parse an Org heading line into level and title
+
+line_spans(text):
+  preserve byte spans and borrowed line text for subtree reconstruction
+
+contains_ascii_case_insensitive(haystack, needle):
+  scan haystack with a byte window the same length as needle
+  compare each window with ASCII case-insensitive byte equality
+#+end_example
+
+#+begin_src rust :tangle src/notes.rs
+
+fn split_timestamp_title(heading_text: &str) -> (Option<&str>, &str) {
+    let trimmed = heading_text.trim();
+    if let Some((timestamp, rest)) = trimmed
+        .strip_prefix('[')
+        .and_then(|_| trimmed.split_once(']'))
+    {
+        (Some(timestamp.trim_start_matches('[')), rest.trim_start())
+    } else {
+        (None, trimmed)
+    }
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
+}
+
+fn line_spans(text: &str) -> Vec<Line<'_>> {
+    let mut start = 0usize;
+    text.split_inclusive('\n')
+        .map(|line| {
+            let end = start + line.len();
+            let span = Line {
+                start,
+                end,
+                text: line,
+            };
+            start = end;
+            span
+        })
+        .collect()
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+#+end_src
+
 ** CLI Surface
 :PROPERTIES:
 :CUSTOM_ID: cli-surface
@@ -2306,16 +2563,16 @@ enum Command {
     /// List tickets.
     #[command(visible_alias = "ls")]
     List(ListArgs),
-    /// Display ticket metadata and body outline.
+    /// Display ticket metadata/body, or one note with --note.
     Show(ShowArgs),
     /// Append a timestamped note.
     #[command(name = "add-note")]
     AddNote(AddNoteArgs),
     /// Output tickets as JSON objects, optionally filtered.
     Query(QueryArgs),
-    /// Validate semantic heading conventions.
+    /// Validate semantic headings and lint rules L001-L003, including L003 note-title length.
     Lint(LintArgs),
-    /// List note headings.
+    /// List note headings as timestamp plus title.
     Notes(IdArgs),
 }
 
@@ -2399,7 +2656,7 @@ struct ShowArgs {
     #[arg(short = 'f', long)]
     full: bool,
     id: String,
-    #[arg(long)]
+    #[arg(long, help = "Print exactly one matching note subtree")]
     note: Option<String>,
 }
 
@@ -2439,35 +2696,6 @@ impl From<OutputArg> for OutputMode {
 #[derive(Debug, Args)]
 struct LintArgs {
     id_or_path: Option<String>,
-}
-
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Help => "help",
-            Command::Init => "init",
-            Command::Create(_) => "create",
-            Command::Start(_) => "start",
-            Command::Block(_) => "block",
-            Command::Close(_) => "close",
-            Command::Reopen(_) => "reopen",
-            Command::Status(_) => "status",
-            Command::Dep(_) => "dep",
-            Command::Undep(_) => "undep",
-            Command::Link(_) => "link",
-            Command::Unlink(_) => "unlink",
-            Command::Tag(_) => "tag",
-            Command::Untag(_) => "untag",
-            Command::Ready(_) => "ready",
-            Command::Blocked(_) => "blocked",
-            Command::List(_) => "list",
-            Command::Show(_) => "show",
-            Command::AddNote(_) => "add-note",
-            Command::Query(_) => "query",
-            Command::Lint(_) => "lint",
-            Command::Notes(_) => "notes",
-        }
-    }
 }
 
 pub fn run_from<I, T>(args: I) -> i32
@@ -2583,10 +2811,10 @@ where
             print_read(crate::read::list(&store, &filters, args.output.into()))
         }
         Some(Command::Show(args)) => {
-            if args.note.is_some() {
-                return Err("not implemented: show --note".to_string());
-            }
             let store = read_store()?;
+            if let Some(note_match) = args.note {
+                return print_note(crate::notes::show_note(&store, &args.id, &note_match));
+            }
             print_read(crate::read::show(&store, &args.id, args.full))
         }
         Some(Command::Query(args)) => {
@@ -2599,7 +2827,9 @@ where
             ))
         }
         Some(Command::Lint(args)) => run_lint(args),
-        Some(command) => Err(format!("not implemented: {}", command.name())),
+        Some(Command::Notes(args)) => {
+            print_note(crate::notes::list_notes(&read_store()?, &args.id))
+        }
     }
 }
 
@@ -2664,6 +2894,12 @@ fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
 }
 
 fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
+    let output = result.map_err(|error| error.to_string())?;
+    print!("{output}");
+    Ok(())
+}
+
+fn print_note(result: crate::notes::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
@@ -2758,21 +2994,6 @@ fn help_command_prints_help() {
 }
 
 #[test]
-fn known_commands_parse_but_remain_stubbed() {
-    let cases: &[(&[&str], &str)] = &[(&["notes", "sys-ywp7"], "notes")];
-
-    for (args, command_name) in cases {
-        let output = run(args);
-        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!("not implemented: {command_name}")),
-            "args: {args:?}, stderr: {stderr}"
-        );
-    }
-}
-
-#[test]
 fn unknown_flags_are_usage_errors() {
     let output = run(&["ready", "--mystery"]);
 
@@ -2782,21 +3003,18 @@ fn unknown_flags_are_usage_errors() {
 }
 
 #[test]
-fn note_fetch_remains_explicitly_unimplemented() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let tickets_dir = temp.path().join(".tickets");
-    std::fs::create_dir(&tickets_dir).expect("tickets dir");
-    std::fs::write(tickets_dir.join("sys-ywp7.org"), "* Ticket\n").expect("write ticket");
+fn help_documents_note_and_lint_surfaces() {
+    let show = run(&["show", "--help"]);
+    assert!(show.status.success());
+    let show_help = String::from_utf8_lossy(&show.stdout);
+    assert!(show_help.contains("--note"));
+    assert!(show_help.contains("Print exactly one matching note subtree"));
 
-    let output = Command::new(tko_bin())
-        .args(["show", "sys-ywp7", "--note", "Spec"])
-        .env("TICKETS_DIR", &tickets_dir)
-        .output()
-        .expect("tko command should run");
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not implemented: show --note"));
+    let lint = run(&["lint", "--help"]);
+    assert!(lint.status.success());
+    let lint_help = String::from_utf8_lossy(&lint.stdout);
+    assert!(lint_help.contains("L003"));
+    assert!(lint_help.contains("note-title"));
 }
 #+end_src
 
@@ -3598,5 +3816,226 @@ display_path(path):
 
 fn display_path(path: &Path) -> String {
     path.display().to_string()
+}
+#+end_src
+
+*** Note test fixture
+
+#+begin_example
+Fixture:
+  create a temporary ticket store
+  write ticket text by id
+  run the compiled tko binary with TICKETS_DIR pointed at the fixture store
+  provide stdout helper for successful commands
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+// Generated from tko.org. Do not edit by hand.
+
+use std::path::PathBuf;
+use std::process::Command;
+use tempfile::TempDir;
+
+fn tko_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_tko")
+}
+
+struct Fixture {
+    temp: TempDir,
+    tickets_dir: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tickets_dir = temp.path().join(".tickets");
+        std::fs::create_dir(&tickets_dir).expect("tickets dir");
+        Self { temp, tickets_dir }
+    }
+
+    fn write(&self, id: &str, text: &str) {
+        std::fs::write(self.tickets_dir.join(format!("{id}.org")), text).expect("write ticket");
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        Command::new(tko_bin())
+            .args(args)
+            .env("TICKETS_DIR", &self.tickets_dir)
+            .current_dir(self.temp.path())
+            .output()
+            .expect("tko command should run")
+    }
+
+    fn stdout(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("utf8 stdout")
+    }
+}
+#+end_src
+
+*** Notes missing section
+
+#+begin_example
+notes without ** Notes:
+  exits successfully
+  prints no output
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn notes_handles_missing_section_successfully() {
+    let fixture = Fixture::new();
+    fixture.write("sys-none", "* No notes\n\n** Description\nBody.\n");
+
+    let output = fixture.run(&["notes", "sys-none"]);
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+}
+#+end_src
+
+*** Notes list output
+
+#+begin_example
+notes list:
+  lists level-3 note headings under ** Notes
+  preserves document order
+  permits timestamp-only and untimestamped headings
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn notes_lists_entries_in_document_order() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Ticket\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] First title\nFirst body.\n*** [2026-06-11 Thu 11:00Z]\nTimestamp-only body.\n*** Untimestamped title\nLoose body.\n",
+    );
+
+    let output = fixture.stdout(&["notes", "notes"]);
+
+    assert_eq!(
+        output,
+        "[2026-06-11 Thu 10:00Z] First title\n[2026-06-11 Thu 11:00Z]\nUntimestamped title\n"
+    );
+}
+#+end_src
+
+*** Show note by title
+
+#+begin_example
+show --note title:
+  matches title text case-insensitively
+  prints exactly the matching note subtree
+  includes child headings in the selected subtree
+  excludes following sibling note bodies
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn show_note_matches_title_case_insensitively_and_prints_one_subtree() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Ticket\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] First title\nFirst body.\n**** Child\nChild body.\n*** [2026-06-11 Thu 11:00Z] Second title\nSecond body.\n",
+    );
+
+    let output = fixture.stdout(&["show", "sys-notes", "--note", "FIRST"]);
+
+    assert_eq!(
+        output,
+        "*** [2026-06-11 Thu 10:00Z] First title\nFirst body.\n**** Child\nChild body.\n"
+    );
+    assert!(!output.contains("Second body"));
+}
+#+end_src
+
+*** Show note by timestamp
+
+#+begin_example
+show --note timestamp:
+  matches timestamp text
+  prints exactly the matching note subtree
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn show_note_can_match_timestamp_text() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Ticket\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] First title\nFirst body.\n*** [2026-06-12 Fri 11:00Z] Second title\nSecond body.\n",
+    );
+
+    let output = fixture.stdout(&["show", "sys-notes", "--note", "2026-06-12"]);
+
+    assert_eq!(
+        output,
+        "*** [2026-06-12 Fri 11:00Z] Second title\nSecond body.\n"
+    );
+}
+#+end_src
+
+*** Ambiguous note match
+
+#+begin_example
+ambiguous show --note:
+  exits with status 2
+  prints matching candidate headings
+  does not print candidate note bodies
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn ambiguous_note_match_lists_candidates_without_bodies() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Ticket\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] Alpha deploy\nsecret body one\n*** [2026-06-11 Thu 11:00Z] Alpha rollback\nsecret body two\n",
+    );
+
+    let output = fixture.run(&["show", "sys-notes", "--note", "alpha"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ambiguous note match: alpha"));
+    assert!(stderr.contains("candidate: [2026-06-11 Thu 10:00Z] Alpha deploy"));
+    assert!(stderr.contains("candidate: [2026-06-11 Thu 11:00Z] Alpha rollback"));
+    assert!(!stderr.contains("secret body"));
+}
+#+end_src
+
+*** Add-note title limit
+
+#+begin_example
+add-note overlong title:
+  keeps note-title limit executable through note-facing tests
+  requires explicit --title syntax
+  exits with the write-layer title length error
+#+end_example
+
+#+begin_src rust :tangle tests/notes.rs
+
+#[test]
+fn add_note_refuses_overlong_title() {
+    let fixture = Fixture::new();
+    fixture.write("sys-notes", "* Ticket\n");
+    let title = "x".repeat(73);
+
+    let output = fixture.run(&["add-note", "sys-notes", "--title", &title]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("note title exceeds 72 characters"));
 }
 #+end_src
