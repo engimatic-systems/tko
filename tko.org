@@ -266,6 +266,14 @@ pub mod write;
 
 The storage layer is strict about canonical =TKO_*= keys.
 
+*** Storage imports and errors
+
+#+begin_example
+define storage result/error surface
+preserve io::Error as error source
+name user-facing parse and lookup failures
+#+end_example
+
 #+begin_src rust :tangle src/storage.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -337,6 +345,17 @@ impl From<io::Error> for StorageError {
         StorageError::Io(error)
     }
 }
+#+end_src
+
+*** Ticket and store model
+
+#+begin_example
+Ticket owns parsed metadata and body text
+TicketStore owns the ticket directory path
+resolve ids by exact or partial filename stem
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
@@ -442,6 +461,17 @@ impl TicketStore {
         set_property(&path, key, value)
     }
 }
+#+end_src
+
+*** Ticket discovery and loading
+
+#+begin_example
+discover .tickets from env or ancestors
+load ticket text from disk
+parse strict TKO_* properties into Ticket
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 pub fn discover_tickets_dir(
     start: &Path,
@@ -497,6 +527,17 @@ pub fn parse_ticket(path: &Path, text: &str) -> Result<Ticket> {
         body,
     })
 }
+#+end_src
+
+*** List property formatting
+
+#+begin_example
+parse bracketed comma lists only
+empty list is []
+format vectors back into canonical property text
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 pub fn parse_list_value(value: &str) -> Result<Vec<String>> {
     let trimmed = value.trim();
@@ -526,6 +567,17 @@ pub fn format_list_value(items: &[String]) -> String {
         format!("[{}]", items.join(", "))
     }
 }
+#+end_src
+
+*** Property mutation
+
+#+begin_example
+require TKO_* writes
+update existing top-level drawer entry when present
+insert drawer or missing property when absent
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
     if !key.starts_with("TKO_") {
@@ -554,6 +606,17 @@ pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
 
     Ok(())
 }
+#+end_src
+
+*** Org document model
+
+#+begin_example
+parse only the top property drawer
+body is document text after drawer
+tko_properties keeps canonical TKO_* entries only
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 #[derive(Debug, Clone)]
 struct OrgDocument<'a> {
@@ -608,6 +671,17 @@ struct PropertyEntry {
     value: String,
     line_index: usize,
 }
+#+end_src
+
+*** Property parsing helpers
+
+#+begin_example
+find top-level property drawer bounds
+parse :KEY: value lines
+default optional and list properties
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 fn parse_property_drawer(lines: &[String]) -> Option<PropertyDrawer> {
     if lines
@@ -670,6 +744,17 @@ fn priority_property(properties: &HashMap<String, String>) -> Result<u8> {
         None => Ok(2),
     }
 }
+#+end_src
+
+*** Storage text helpers
+
+#+begin_example
+extract first level-1 title
+resolve UTF-8 filename stems
+preserve line endings during property edits
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
 
 fn first_title(body: &str) -> String {
     body.lines()
@@ -708,13 +793,19 @@ fn line_ending(line: &str) -> &'static str {
         ""
     }
 }
-
 #+end_src
 
 ** Query DSL
 :PROPERTIES:
 :CUSTOM_ID: query-dsl
 :END:
+
+*** Query errors
+
+#+begin_example
+define parser/evaluator error type
+display errors as plain messages
+#+end_example
 
 #+begin_src rust :tangle src/query.rs
 // Generated from tko.org. Do not edit by hand.
@@ -745,6 +836,17 @@ impl fmt::Display for QueryError {
 }
 
 impl Error for QueryError {}
+#+end_src
+
+*** Predicate and expression model
+
+#+begin_example
+parse input into tokens and expression tree
+reject trailing tokens
+evaluate expressions against one ticket
+#+end_example
+
+#+begin_src rust :tangle src/query.rs
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Predicate {
@@ -804,6 +906,16 @@ impl Expr {
         }
     }
 }
+#+end_src
+
+*** Query token model
+
+#+begin_example
+represent comparison operators and punctuation
+keep words as unquoted bare tokens
+#+end_example
+
+#+begin_src rust :tangle src/query.rs
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompareOp {
@@ -825,6 +937,17 @@ enum Token {
     RBracket,
     Comma,
 }
+#+end_src
+
+*** Recursive descent parser
+
+#+begin_example
+parse or after and after not precedence
+parse presence, containment, membership, and comparison forms
+parse bracketed value lists
+#+end_example
+
+#+begin_src rust :tangle src/query.rs
 
 struct Parser {
     tokens: Vec<Token>,
@@ -970,6 +1093,16 @@ impl Parser {
         }
     }
 }
+#+end_src
+
+*** Tokenizer
+
+#+begin_example
+scan whitespace, operators, grouping, list delimiters, and words
+reject invalid or empty predicates
+#+end_example
+
+#+begin_src rust :tangle src/query.rs
 
 fn tokenize(input: &str) -> Result<Vec<Token>> {
     let mut chars = input.chars().peekable();
@@ -1053,6 +1186,17 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
 
     Ok(tokens)
 }
+#+end_src
+
+*** Query evaluation helpers
+
+#+begin_example
+compare priority numerically and other scalars lexically
+map scalar and plural field names
+treat plural presence as non-empty list
+#+end_example
+
+#+begin_src rust :tangle src/query.rs
 
 fn compare(ticket: &Ticket, field: &str, op: CompareOp, value: &str) -> Result<bool> {
     if field == "priority" {
@@ -1121,6 +1265,13 @@ fn field_present(ticket: &Ticket, field: &str) -> Result<bool> {
 :CUSTOM_ID: read-commands
 :END:
 
+*** Read model
+
+#+begin_example
+define read error, filter, and output-mode surfaces
+keep command outputs as Strings for CLI adapters
+#+end_example
+
 #+begin_src rust :tangle src/read.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -1167,6 +1318,17 @@ pub enum OutputMode {
     Summary,
     Json,
 }
+#+end_src
+
+*** Show command
+
+#+begin_example
+load one ticket
+print metadata header
+print full body or heading outline
+#+end_example
+
+#+begin_src rust :tangle src/read.rs
 
 pub fn show(store: &TicketStore, id: &str, full: bool) -> Result<String> {
     let ticket = store
@@ -1187,6 +1349,18 @@ pub fn show(store: &TicketStore, id: &str, full: bool) -> Result<String> {
     }
     Ok(output)
 }
+#+end_src
+
+*** List and query commands
+
+#+begin_example
+load tickets
+apply filters or query predicate
+compute ready and blocked by dependency state
+render selected output mode
+#+end_example
+
+#+begin_src rust :tangle src/read.rs
 
 pub fn list(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
     validate_filters(filters)?;
@@ -1259,6 +1433,17 @@ pub fn query(store: &TicketStore, predicate: Option<&str>, output: OutputMode) -
     }
     Ok(finish_lines(lines))
 }
+#+end_src
+
+*** Read renderers
+
+#+begin_example
+render id, summary, or compact json
+metadata header prints stable fields
+omit absent optional json fields
+#+end_example
+
+#+begin_src rust :tangle src/read.rs
 
 fn render_ticket(ticket: &Ticket, output: OutputMode) -> String {
     match output {
@@ -1330,6 +1515,18 @@ fn query_json(ticket: &Ticket) -> serde_json::Value {
     }
     value
 }
+#+end_src
+
+*** Ticket selection helpers
+
+#+begin_example
+load every ticket path
+index tickets by id
+select active tickets
+find unresolved dependencies
+#+end_example
+
+#+begin_src rust :tangle src/read.rs
 
 fn load_all(store: &TicketStore) -> Result<Vec<Ticket>> {
     store
@@ -1372,6 +1569,17 @@ fn unresolved_deps(ticket: &Ticket, by_id: &HashMap<String, Ticket>) -> Vec<Stri
         .cloned()
         .collect()
 }
+#+end_src
+
+*** Filter and line helpers
+
+#+begin_example
+match status, assignee, and tag filters
+validate status filters
+finish line-oriented output with a trailing newline
+#+end_example
+
+#+begin_src rust :tangle src/read.rs
 
 fn matches_filters(ticket: &Ticket, filters: &Filters) -> bool {
     if filters
@@ -2639,9 +2847,15 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
 :CUSTOM_ID: cli-surface
 :END:
 
-The scaffold owns command parsing and dispatch shape. Command behavior remains
-stubbed until later train cars implement storage, reads, writes, lint, and note
-work.
+The CLI owns argument parsing and dispatch. Command behavior stays in domain modules.
+
+*** CLI command model
+
+#+begin_example
+define clap parser and subcommand surface
+name user-facing command help
+keep behavior delegated to storage/read/write/lint/notes modules
+#+end_example
 
 #+begin_src rust :tangle src/cli.rs
 // Generated from tko.org. Do not edit by hand.
@@ -2716,6 +2930,16 @@ enum Command {
     /// List note headings as timestamp plus title.
     Notes(IdArgs),
 }
+#+end_src
+
+*** Create command arguments
+
+#+begin_example
+accept explicit title and optional body sections
+accept metadata flags without ambient defaults
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 #[derive(Debug, Args)]
 struct CreateArgs {
@@ -2741,6 +2965,16 @@ struct CreateArgs {
     #[arg(long)]
     tags: Option<String>,
 }
+#+end_src
+
+*** Shared command arguments
+
+#+begin_example
+model id, status, relation, tag, filter, show, and add-note arguments
+make add-note title explicit
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 #[derive(Debug, Args)]
 struct IdArgs {
@@ -2809,6 +3043,17 @@ struct AddNoteArgs {
     #[arg(long)]
     body: Option<String>,
 }
+#+end_src
+
+*** Query and lint arguments
+
+#+begin_example
+map CLI output enum to read OutputMode
+collect query predicate words
+accept optional lint target
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 #[derive(Debug, Args)]
 struct QueryArgs {
@@ -2838,6 +3083,17 @@ impl From<OutputArg> for OutputMode {
 struct LintArgs {
     id_or_path: Option<String>,
 }
+#+end_src
+
+*** CLI dispatcher
+
+#+begin_example
+parse argv
+route each command to the relevant module
+return process-style status code
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 pub fn run_from<I, T>(args: I) -> i32
 where
@@ -2973,6 +3229,18 @@ where
         }
     }
 }
+#+end_src
+
+*** CLI construction helpers
+
+#+begin_example
+print root help
+discover read or write ticket store
+build CreateTicket from CLI args
+split comma tag input
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 fn print_help() -> io::Result<()> {
     let mut command = Cli::command();
@@ -3027,6 +3295,16 @@ fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> 
         tag: args.tag,
     })
 }
+#+end_src
+
+*** Print adapters
+
+#+begin_example
+convert module errors to CLI strings
+print read/write/note output unchanged
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 fn print_read(result: crate::read::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
@@ -3045,6 +3323,17 @@ fn print_note(result: crate::notes::Result<String>) -> Result<(), String> {
     print!("{output}");
     Ok(())
 }
+#+end_src
+
+*** Lint dispatcher
+
+#+begin_example
+resolve optional lint target as id or path
+run path or store lint
+print findings and fail when any finding is a failure
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
 
 fn run_lint(args: LintArgs) -> Result<(), String> {
     let store = read_store()?;
@@ -3093,6 +3382,17 @@ fn main() -> ExitCode {
 :CUSTOM_ID: tests
 :END:
 
+** CLI Tests
+:PROPERTIES:
+:CUSTOM_ID: cli-tests
+:END:
+
+*** CLI test fixture
+
+#+begin_example
+run the compiled tko binary with command args
+#+end_example
+
 #+begin_src rust :tangle tests/cli.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -3108,6 +3408,15 @@ fn run(args: &[&str]) -> std::process::Output {
         .output()
         .expect("tko command should run")
 }
+#+end_src
+
+*** Root help
+
+#+begin_example
+root help lists core command surface
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
 
 #[test]
 fn root_help_lists_command_surface() {
@@ -3123,6 +3432,15 @@ fn root_help_lists_command_surface() {
     assert!(stdout.contains("add-note"));
     assert!(stdout.contains("notes"));
 }
+#+end_src
+
+*** Help subcommand
+
+#+begin_example
+help command prints usage and command list
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
 
 #[test]
 fn help_command_prints_help() {
@@ -3133,6 +3451,15 @@ fn help_command_prints_help() {
     assert!(stdout.contains("Usage:"));
     assert!(stdout.contains("Commands:"));
 }
+#+end_src
+
+*** Usage errors
+
+#+begin_example
+unknown flags exit with code 2 and clap error text
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
 
 #[test]
 fn unknown_flags_are_usage_errors() {
@@ -3142,6 +3469,16 @@ fn unknown_flags_are_usage_errors() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unexpected argument '--mystery'"));
 }
+#+end_src
+
+*** Help documents note and lint surfaces
+
+#+begin_example
+show help exposes --note
+lint help mentions note-title lint surface
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
 
 #[test]
 fn help_documents_note_and_lint_surfaces() {
@@ -3159,6 +3496,17 @@ fn help_documents_note_and_lint_surfaces() {
 }
 #+end_src
 
+** Storage Tests
+:PROPERTIES:
+:CUSTOM_ID: storage-tests
+:END:
+
+*** Storage test fixture
+
+#+begin_example
+write ticket fixtures to temporary directories
+#+end_example
+
 #+begin_src rust :tangle tests/storage.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -3173,6 +3521,16 @@ use tko::storage::{
 fn write(path: &Path, text: &str) {
     fs::write(path, text).expect("write fixture");
 }
+#+end_src
+
+*** Ticket directory discovery
+
+#+begin_example
+walk upward to find .tickets
+honor explicit tickets dir override
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn discovers_tickets_dir_by_walking_upward() {
@@ -3189,6 +3547,16 @@ fn discovers_tickets_dir_by_walking_upward() {
     let discovered = discover_tickets_dir(&nested, Some(&explicit), false).expect("env wins");
     assert_eq!(discovered, explicit);
 }
+#+end_src
+
+*** Canonical property loading
+
+#+begin_example
+load all canonical TKO_* fields
+preserve body text after property drawer
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn loads_canonical_ticket_properties_and_body() {
@@ -3215,6 +3583,15 @@ fn loads_canonical_ticket_properties_and_body() {
     assert_eq!(ticket.properties.tags, ["repo/tko", "tooling"]);
     assert!(ticket.body.starts_with("* Define spec"));
 }
+#+end_src
+
+*** Property defaults
+
+#+begin_example
+missing metadata falls back to documented defaults
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn missing_canonical_properties_use_defaults() {
@@ -3232,6 +3609,16 @@ fn missing_canonical_properties_use_defaults() {
     assert!(ticket.properties.deps.is_empty());
     assert!(ticket.properties.tags.is_empty());
 }
+#+end_src
+
+*** List parsing and formatting
+
+#+begin_example
+accept bracketed lists
+reject legacy comma-only list syntax
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn parses_and_formats_list_properties() {
@@ -3247,6 +3634,16 @@ fn parses_and_formats_list_properties() {
     );
     assert!(parse_list_value("one, two").is_err());
 }
+#+end_src
+
+*** ID resolution
+
+#+begin_example
+resolve partial filename stems
+report ambiguous and missing ids
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn resolves_ticket_ids_by_filename_stem() {
@@ -3268,6 +3665,15 @@ fn resolves_ticket_ids_by_filename_stem() {
     let missing = store.resolve_id("none").expect_err("missing");
     assert!(matches!(missing, StorageError::TicketNotFound(_)));
 }
+#+end_src
+
+*** Hidden lockfiles
+
+#+begin_example
+ignore hidden .org lockfile symlinks during ticket iteration
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn ignores_hidden_org_lockfiles_in_ticket_iteration() {
@@ -3285,6 +3691,16 @@ fn ignores_hidden_org_lockfiles_in_ticket_iteration() {
     assert_eq!(paths, [tickets.join("sys-real.org")]);
     assert_eq!(store.load("real").expect("load real").title, "Real");
 }
+#+end_src
+
+*** Property updates
+
+#+begin_example
+update existing drawer entries
+insert a drawer when missing
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
 
 #[test]
 fn updates_existing_properties_and_inserts_missing_drawer() {
@@ -3312,8 +3728,19 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     let missing_text = fs::read_to_string(missing).expect("read missing");
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
 }
-
 #+end_src
+
+** Read Tests
+:PROPERTIES:
+:CUSTOM_ID: read-tests
+:END:
+
+*** Read test fixture
+
+#+begin_example
+create a temporary ticket store with open, blocked, closed, and in-progress tickets
+run compiled tko with TICKETS_DIR pointed at that store
+#+end_example
 
 #+begin_src rust :tangle tests/read.rs
 // Generated from tko.org. Do not edit by hand.
@@ -3385,6 +3812,16 @@ impl Fixture {
 fn write_ticket(tickets_dir: &std::path::Path, id: &str, text: &str) {
     std::fs::write(tickets_dir.join(format!("{id}.org")), text).expect("write ticket");
 }
+#+end_src
+
+*** Show output
+
+#+begin_example
+default show prints metadata and outline only
+full show includes body prose
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 #[test]
 fn show_prints_metadata_and_outline_or_full_body() {
@@ -3401,6 +3838,17 @@ fn show_prints_metadata_and_outline_or_full_body() {
     let full = fixture.stdout(&["show", "--full", "sys-a"]);
     assert!(full.contains("Alpha body."));
 }
+#+end_src
+
+*** List, ready, and blocked output
+
+#+begin_example
+filter by status, assignee, and tag
+classify unresolved dependencies
+prove id and json output modes
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 #[test]
 fn list_ready_and_blocked_use_filters_and_dependency_state() {
@@ -3429,6 +3877,16 @@ fn list_ready_and_blocked_use_filters_and_dependency_state() {
     assert_eq!(row["id"], "sys-b");
     assert_eq!(row["deps"], serde_json::json!(["sys-a"]));
 }
+#+end_src
+
+*** Output modes
+
+#+begin_example
+query defaults to ids
+summary and json modes preserve field shape
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 #[test]
 fn output_modes_cover_ids_summaries_and_json() {
@@ -3454,6 +3912,15 @@ fn output_modes_cover_ids_summaries_and_json() {
     assert_eq!(rows[0]["priority"], 1);
     assert!(rows[0]["priority"].is_number());
 }
+#+end_src
+
+*** Query DSL behavior
+
+#+begin_example
+support in, contain, no, not, and, or, and grouping
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 #[test]
 fn query_dsl_supports_boolean_membership_and_presence() {
@@ -3481,6 +3948,15 @@ fn query_dsl_supports_boolean_membership_and_presence() {
     let no_deps = fixture.stdout(&["query", "no", "deps"]);
     assert_eq!(lines(&no_deps), ["sys-a", "sys-c"]);
 }
+#+end_src
+
+*** No jq compatibility
+
+#+begin_example
+jq-style predicates fail instead of being accepted
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 #[test]
 fn query_does_not_accept_jq_filters() {
@@ -3491,11 +3967,33 @@ fn query_does_not_accept_jq_filters() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.is_empty());
 }
+#+end_src
+
+*** Read test helpers
+
+#+begin_example
+split command output into lines for assertions
+#+end_example
+
+#+begin_src rust :tangle tests/read.rs
 
 fn lines(output: &str) -> Vec<&str> {
     output.lines().collect()
 }
 #+end_src
+
+** Write Tests
+:PROPERTIES:
+:CUSTOM_ID: write-tests
+:END:
+
+*** Write test fixture
+
+#+begin_example
+create a temporary ticket store
+run compiled tko with TICKETS_DIR and fixture cwd
+read mutated ticket files
+#+end_example
 
 #+begin_src rust :tangle tests/write.rs
 // Generated from tko.org. Do not edit by hand.
@@ -3558,6 +4056,18 @@ impl Fixture {
 fn write_ticket(tickets_dir: &Path, id: &str, text: &str) {
     std::fs::write(tickets_dir.join(format!("{id}.org")), text).expect("write ticket");
 }
+#+end_src
+
+*** Create command
+
+#+begin_example
+write canonical TKO_* properties
+expand requested body sections
+resolve parent ids
+reject empty titles
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn create_writes_tko_properties_sections_and_parent_resolution() {
@@ -3610,6 +4120,15 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("ticket title is required"));
 }
+#+end_src
+
+*** Init command
+
+#+begin_example
+create .tickets explicitly in current directory
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn init_creates_ticket_storage_explicitly() {
@@ -3625,6 +4144,15 @@ fn init_creates_ticket_storage_explicitly() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Initialized"));
 }
+#+end_src
+
+*** Status aliases
+
+#+begin_example
+start/block/close/reopen update TKO_STATUS
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn status_aliases_update_tko_status() {
@@ -3651,6 +4179,17 @@ fn status_aliases_update_tko_status() {
     );
     assert!(fixture.read("sys-a").contains(":TKO_STATUS: open"));
 }
+#+end_src
+
+*** Dependency mutation
+
+#+begin_example
+preserve order
+avoid duplicate deps
+remove missing deps harmlessly
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn deps_preserve_order_and_avoid_duplicates() {
@@ -3675,6 +4214,17 @@ fn deps_preserve_order_and_avoid_duplicates() {
     );
     assert!(fixture.read("sys-a").contains(":TKO_DEPS: []"));
 }
+#+end_src
+
+*** Link mutation
+
+#+begin_example
+add symmetric links
+avoid duplicates
+remove from both tickets
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn links_are_symmetric_and_deduplicated() {
@@ -3697,6 +4247,17 @@ fn links_are_symmetric_and_deduplicated() {
     assert!(fixture.read("sys-a").contains(":TKO_LINKS: []"));
     assert!(fixture.read("sys-b").contains(":TKO_LINKS: []"));
 }
+#+end_src
+
+*** Tag mutation
+
+#+begin_example
+preserve order
+avoid duplicates
+remove tags
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn tags_preserve_order_and_avoid_duplicates() {
@@ -3721,6 +4282,17 @@ fn tags_preserve_order_and_avoid_duplicates() {
     );
     assert!(fixture.read("sys-a").contains(":TKO_TAGS: [tooling]"));
 }
+#+end_src
+
+*** Add note command
+
+#+begin_example
+append level-3 notes under level-2 Notes
+require explicit title
+reject escaped newlines in note title
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
 
 #[test]
 fn add_note_creates_level_two_notes_and_level_three_entries() {
@@ -3774,6 +4346,9 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
 }
 #+end_src
 
+** Lint Tests
+
+*** Lint test fixture
 *** Lint test fixture
 
 #+begin_example
@@ -3976,6 +4551,8 @@ fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 #+end_src
+
+** Note Tests
 
 *** Note test fixture
 
