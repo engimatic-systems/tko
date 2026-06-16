@@ -2351,13 +2351,7 @@ pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<Stri
 
     match matches.len() {
         0 => Err(NotesError::new(format!("note not found: {note_match}"))),
-        1 => {
-            let mut output = matches[0].subtree.to_string();
-            if !output.ends_with('\n') {
-                output.push('\n');
-            }
-            Ok(output)
-        }
+        1 => Ok(matches[0].subtree.to_string()),
         _ => {
             let mut candidates = String::new();
             for entry in &matches {
