@@ -1,7 +1,7 @@
 // Generated from tko.org. Do not edit by hand.
 
 use crate::read::Filters;
-use crate::storage::{TicketStore, migrate_legacy_properties};
+use crate::storage::TicketStore;
 use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::env;
@@ -67,9 +67,6 @@ enum Command {
     Lint(LintArgs),
     /// List note headings.
     Notes(IdArgs),
-    /// Migrate legacy TK_* properties to TKO_* properties.
-    #[command(name = "migrate-legacy-properties")]
-    MigrateLegacyProperties(MigrationArgs),
 }
 
 #[derive(Debug, Args)]
@@ -162,13 +159,6 @@ struct LintArgs {
     id_or_path: Option<String>,
 }
 
-#[derive(Debug, Args)]
-struct MigrationArgs {
-    #[arg(long)]
-    apply: bool,
-    id_or_path: Option<PathBuf>,
-}
-
 impl Command {
     fn name(&self) -> &'static str {
         match self {
@@ -193,7 +183,6 @@ impl Command {
             Command::Query(_) => "query",
             Command::Lint(_) => "lint",
             Command::Notes(_) => "notes",
-            Command::MigrateLegacyProperties(_) => "migrate-legacy-properties",
         }
     }
 }
@@ -221,7 +210,6 @@ where
 
     match cli.command {
         None | Some(Command::Help) => print_help().map_err(|error| error.to_string()),
-        Some(Command::MigrateLegacyProperties(args)) => run_migration(args),
         Some(Command::Create(args)) => {
             let cwd = env::current_dir().map_err(|error| error.to_string())?;
             let store = write_store(true)?;
@@ -403,73 +391,4 @@ fn print_write(result: crate::write::Result<String>) -> Result<(), String> {
     let output = result.map_err(|error| error.to_string())?;
     print!("{output}");
     Ok(())
-}
-
-fn run_migration(args: MigrationArgs) -> Result<(), String> {
-    let cwd = env::current_dir().map_err(|error| error.to_string())?;
-    let tickets_dir_env = env::var_os("TICKETS_DIR").map(PathBuf::from);
-    let store = TicketStore::discover_from(&cwd, tickets_dir_env.as_deref(), false)
-        .map_err(|error| error.to_string())?;
-
-    let paths = if let Some(target) = args.id_or_path {
-        if target.exists() {
-            vec![target]
-        } else {
-            let id = target.to_string_lossy();
-            vec![store.resolve_id(&id).map_err(|error| error.to_string())?]
-        }
-    } else {
-        store.ticket_paths().map_err(|error| error.to_string())?
-    };
-
-    let mut conflict_count = 0usize;
-    for path in paths {
-        let report =
-            migrate_legacy_properties(&path, args.apply).map_err(|error| error.to_string())?;
-        for action in report.actions {
-            match action {
-                crate::storage::MigrationAction::Rename {
-                    legacy_key,
-                    canonical_key,
-                    value,
-                } => println!(
-                    "{}: rename {} -> {} ({})",
-                    report.path.display(),
-                    legacy_key,
-                    canonical_key,
-                    value
-                ),
-                crate::storage::MigrationAction::RemoveLegacy {
-                    legacy_key,
-                    canonical_key,
-                    value,
-                } => println!(
-                    "{}: remove {} matching {} ({})",
-                    report.path.display(),
-                    legacy_key,
-                    canonical_key,
-                    value
-                ),
-            }
-        }
-        for conflict in report.conflicts {
-            conflict_count += 1;
-            eprintln!(
-                "{}: conflict {}={} differs from {}={}",
-                report.path.display(),
-                conflict.legacy_key,
-                conflict.legacy_value,
-                conflict.canonical_key,
-                conflict.canonical_value
-            );
-        }
-    }
-
-    if conflict_count == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "legacy property migration found {conflict_count} conflict(s)"
-        ))
-    }
 }
