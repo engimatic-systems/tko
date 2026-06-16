@@ -1769,45 +1769,28 @@ fn relation_message(
 
 #+begin_example
 append_note(document, note):
-  if ** Notes exists, insert before the next top-level or second-level heading
-  otherwise append a ** Notes section to the document
-  preserve existing line endings enough to avoid joining headings and notes
+  if the document has no ** Notes section, append one at the end
+  append the note to the end of the file
+  preserve enough line spacing to avoid joining headings and notes
 #+end_example
 
 #+begin_src rust :tangle src/write.rs
 
-fn append_note(document: String, note: &str) -> String {
-    let mut lines = split_inclusive_lines(&document);
-    if let Some(notes_index) = lines
-        .iter()
-        .position(|line| trim_line(line).eq_ignore_ascii_case("** Notes"))
-    {
-        let insert_at = lines
-            .iter()
-            .enumerate()
-            .skip(notes_index + 1)
-            .find_map(|(index, line)| {
-                let trimmed = trim_line(line);
-                if trimmed.starts_with("* ") || trimmed.starts_with("** ") {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(lines.len());
-        if insert_at > 0 && !lines[insert_at - 1].ends_with('\n') {
-            lines[insert_at - 1].push('\n');
+fn append_note(mut document: String, note: &str) -> String {
+    let has_notes = document
+        .lines()
+        .any(|line| line.trim_end_matches('\r').eq_ignore_ascii_case("** Notes"));
+    if !document.ends_with('\n') && !document.is_empty() {
+        document.push('\n');
+    }
+    if !has_notes {
+        if !document.is_empty() {
+            document.push('\n');
         }
-        lines.insert(insert_at, note.to_string());
-        return lines.concat();
+        document.push_str("** Notes\n");
     }
-
-    if !document.ends_with('\n') {
-        lines.push("\n".to_string());
-    }
-    lines.push("\n** Notes\n".to_string());
-    lines.push(note.to_string());
-    lines.concat()
+    document.push_str(note);
+    document
 }
 #+end_src
 
@@ -1937,18 +1920,6 @@ fn file_stem(path: &Path) -> Result<String> {
         .and_then(|stem| stem.to_str())
         .map(ToOwned::to_owned)
         .ok_or_else(|| WriteError::new(format!("ticket path has no file stem: {}", path.display())))
-}
-
-fn split_inclusive_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        text.split_inclusive('\n').map(ToOwned::to_owned).collect()
-    }
-}
-
-fn trim_line(line: &str) -> &str {
-    line.trim_end_matches(['\r', '\n'])
 }
 #+end_src
 
