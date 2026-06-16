@@ -37,6 +37,13 @@ pub struct Filters {
     pub tag: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    Id,
+    Summary,
+    Json,
+}
+
 pub fn show(store: &TicketStore, id: &str, full: bool) -> Result<String> {
     let ticket = store
         .load(id)
@@ -57,50 +64,35 @@ pub fn show(store: &TicketStore, id: &str, full: bool) -> Result<String> {
     Ok(output)
 }
 
-pub fn list(store: &TicketStore, filters: &Filters) -> Result<String> {
+pub fn list(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
     validate_filters(filters)?;
     let mut lines = Vec::new();
     for ticket in load_all(store)? {
         if !matches_filters(&ticket, filters) {
             continue;
         }
-        let mut line = format!(
-            "{:<8} [{}] - {}",
-            ticket.id, ticket.properties.status, ticket.title
-        );
-        if !ticket.properties.deps.is_empty() {
-            line.push_str(&format!(
-                " <- {}",
-                format_list_value(&ticket.properties.deps)
-            ));
-        }
-        lines.push(line);
+        lines.push(render_ticket(&ticket, output));
     }
     Ok(finish_lines(lines))
 }
 
-pub fn ready(store: &TicketStore, filters: &Filters) -> Result<String> {
+pub fn ready(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
     let tickets = load_all(store)?;
     let by_id = ticket_map(&tickets);
     let mut ready = active_tickets(tickets, filters)?
         .into_iter()
         .filter(|ticket| unresolved_deps(ticket, &by_id).is_empty())
         .collect::<Vec<_>>();
-    ready.sort_by_key(|ticket| (ticket.properties.priority, ticket.id.clone()));
+    ready.sort_by_key(|ticket| ticket.id.clone());
     Ok(finish_lines(
         ready
             .into_iter()
-            .map(|ticket| {
-                format!(
-                    "{:<8} [P{}][{}] - {}",
-                    ticket.id, ticket.properties.priority, ticket.properties.status, ticket.title
-                )
-            })
+            .map(|ticket| render_ticket(&ticket, output))
             .collect(),
     ))
 }
 
-pub fn blocked(store: &TicketStore, filters: &Filters) -> Result<String> {
+pub fn blocked(store: &TicketStore, filters: &Filters, output: OutputMode) -> Result<String> {
     let tickets = load_all(store)?;
     let by_id = ticket_map(&tickets);
     let mut blocked = active_tickets(tickets, filters)?
@@ -114,25 +106,16 @@ pub fn blocked(store: &TicketStore, filters: &Filters) -> Result<String> {
             }
         })
         .collect::<Vec<_>>();
-    blocked.sort_by_key(|(ticket, _)| (ticket.properties.priority, ticket.id.clone()));
+    blocked.sort_by_key(|(ticket, _)| ticket.id.clone());
     Ok(finish_lines(
         blocked
             .into_iter()
-            .map(|(ticket, unresolved)| {
-                format!(
-                    "{:<8} [P{}][{}] - {} <- {}",
-                    ticket.id,
-                    ticket.properties.priority,
-                    ticket.properties.status,
-                    ticket.title,
-                    format_list_value(&unresolved)
-                )
-            })
+            .map(|(ticket, _)| render_ticket(&ticket, output))
             .collect(),
     ))
 }
 
-pub fn query(store: &TicketStore, predicate: Option<&str>) -> Result<String> {
+pub fn query(store: &TicketStore, predicate: Option<&str>, output: OutputMode) -> Result<String> {
     let predicate = predicate
         .filter(|predicate| !predicate.trim().is_empty())
         .map(Predicate::parse)
@@ -147,10 +130,28 @@ pub fn query(store: &TicketStore, predicate: Option<&str>) -> Result<String> {
             .map_err(|error| ReadError::new(error.to_string()))?
             .unwrap_or(true)
         {
-            lines.push(query_json(&ticket).to_string());
+            lines.push(render_ticket(&ticket, output));
         }
     }
     Ok(finish_lines(lines))
+}
+
+fn render_ticket(ticket: &Ticket, output: OutputMode) -> String {
+    match output {
+        OutputMode::Id => ticket.id.clone(),
+        OutputMode::Summary => summary_line(ticket),
+        OutputMode::Json => query_json(ticket).to_string(),
+    }
+}
+
+fn summary_line(ticket: &Ticket) -> String {
+    format!(
+        "{:<8} [{}] - {} <- {}",
+        ticket.id,
+        ticket.properties.status,
+        ticket.title,
+        format_list_value(&ticket.properties.deps)
+    )
 }
 
 fn metadata_header(ticket: &Ticket) -> String {

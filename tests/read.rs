@@ -91,24 +91,41 @@ fn list_ready_and_blocked_use_filters_and_dependency_state() {
     let list = fixture.stdout(&["list", "--status", "open", "-T", "repo/tko"]);
     assert_eq!(
         list,
-        "sys-a    [open] - Alpha\nsys-b    [open] - Bravo <- [sys-a]\n"
+        "sys-a    [open] - Alpha <- []\nsys-b    [open] - Bravo <- [sys-a]\n"
     );
 
     let ready = fixture.stdout(&["ready", "--assignee", "rosin"]);
     assert_eq!(
         ready,
-        "sys-a    [P1][open] - Alpha\nsys-d    [P3][in_progress] - Delta\n"
+        "sys-a    [open] - Alpha <- []\nsys-d    [in_progress] - Delta <- [sys-c]\n"
     );
 
     let blocked = fixture.stdout(&["blocked", "-T", "repo/tko"]);
-    assert_eq!(blocked, "sys-b    [P2][open] - Bravo <- [sys-a]\n");
+    assert_eq!(blocked, "sys-b    [open] - Bravo <- [sys-a]\n");
+
+    let ready_ids = fixture.stdout(&["ready", "--output", "id", "--assignee", "rosin"]);
+    assert_eq!(ready_ids, "sys-a\nsys-d\n");
+
+    let blocked_json = fixture.stdout(&["blocked", "--output", "json", "-T", "repo/tko"]);
+    let row = serde_json::from_str::<Value>(blocked_json.trim()).expect("json row");
+    assert_eq!(row["id"], "sys-b");
+    assert_eq!(row["deps"], serde_json::json!(["sys-a"]));
 }
 
 #[test]
-fn query_outputs_json_lines_with_numeric_priority() {
+fn output_modes_cover_ids_summaries_and_json() {
     let fixture = Fixture::new();
 
-    let output = fixture.stdout(&["query", "status", "=", "open"]);
+    let ids = fixture.stdout(&["query", "status", "=", "open"]);
+    assert_eq!(ids, "sys-a\nsys-b\n");
+
+    let summary = fixture.stdout(&["query", "--output", "summary", "status", "=", "open"]);
+    assert_eq!(
+        summary,
+        "sys-a    [open] - Alpha <- []\nsys-b    [open] - Bravo <- [sys-a]\n"
+    );
+
+    let output = fixture.stdout(&["query", "--output", "json", "status", "=", "open"]);
     let rows = output
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("json row"))
@@ -135,16 +152,16 @@ fn query_dsl_supports_boolean_membership_and_presence() {
         "contain",
         "repo/tko",
     ]);
-    assert_eq!(ids(&repo), ["sys-a", "sys-b"]);
+    assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
 
     let complex = fixture.stdout(&[
         "query", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
         "contain", "archived",
     ]);
-    assert_eq!(ids(&complex), ["sys-a", "sys-d"]);
+    assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
 
     let no_deps = fixture.stdout(&["query", "no", "deps"]);
-    assert_eq!(ids(&no_deps), ["sys-a", "sys-c"]);
+    assert_eq!(lines(&no_deps), ["sys-a", "sys-c"]);
 }
 
 #[test]
@@ -157,10 +174,6 @@ fn query_does_not_accept_jq_filters() {
     assert!(!stderr.is_empty());
 }
 
-fn ids(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("json row"))
-        .map(|row| row["id"].as_str().expect("id").to_string())
-        .collect()
+fn lines(output: &str) -> Vec<&str> {
+    output.lines().collect()
 }
