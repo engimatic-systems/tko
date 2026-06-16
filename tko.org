@@ -2636,35 +2636,6 @@ struct LintArgs {
     id_or_path: Option<String>,
 }
 
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Help => "help",
-            Command::Init => "init",
-            Command::Create(_) => "create",
-            Command::Start(_) => "start",
-            Command::Block(_) => "block",
-            Command::Close(_) => "close",
-            Command::Reopen(_) => "reopen",
-            Command::Status(_) => "status",
-            Command::Dep(_) => "dep",
-            Command::Undep(_) => "undep",
-            Command::Link(_) => "link",
-            Command::Unlink(_) => "unlink",
-            Command::Tag(_) => "tag",
-            Command::Untag(_) => "untag",
-            Command::Ready(_) => "ready",
-            Command::Blocked(_) => "blocked",
-            Command::List(_) => "list",
-            Command::Show(_) => "show",
-            Command::AddNote(_) => "add-note",
-            Command::Query(_) => "query",
-            Command::Lint(_) => "lint",
-            Command::Notes(_) => "notes",
-        }
-    }
-}
-
 pub fn run_from<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -3918,7 +3889,7 @@ fn add_note_refuses_overlong_title() {
     fixture.write("sys-notes", "* Ticket\n");
     let title = "x".repeat(73);
 
-    let output = fixture.run(&["add-note", "sys-notes", &title]);
+    let output = fixture.run(&["add-note", "sys-notes", "--title", &title]);
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
