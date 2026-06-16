@@ -2321,7 +2321,7 @@ list_notes(store, id):
 show_note(store, id, note_match):
   load the ticket by id
   extract note entries from the ticket body
-  case-insensitively match title or timestamp text
+  ASCII-case-insensitively match displayed note heading text
   print exactly one matching subtree
   fail with candidate headings when the match is ambiguous
 #+end_example
@@ -2343,16 +2343,9 @@ pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<Stri
     let ticket = store
         .load(id)
         .map_err(|error| NotesError::new(error.to_string()))?;
-    let needle = note_match.to_ascii_lowercase();
     let matches = note_entries(&ticket.body)
         .into_iter()
-        .filter(|entry| {
-            entry.title.to_ascii_lowercase().contains(&needle)
-                || entry
-                    .timestamp
-                    .as_ref()
-                    .is_some_and(|timestamp| timestamp.to_ascii_lowercase().contains(&needle))
-        })
+        .filter(|entry| contains_ascii_case_insensitive(entry.heading, note_match))
         .collect::<Vec<_>>();
 
     match matches.len() {
@@ -2455,6 +2448,10 @@ finish_lines(lines):
 
 ensure_trailing_newline(text):
   append one newline when a note subtree lacks one
+
+contains_ascii_case_insensitive(haystack, needle):
+  scan haystack with a byte window the same length as needle
+  compare each window with ASCII case-insensitive byte equality
 #+end_example
 
 #+begin_src rust :tangle src/notes.rs
@@ -2518,6 +2515,16 @@ fn ensure_trailing_newline(mut text: String) -> String {
         text.push('\n');
     }
     text
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 #+end_src
 

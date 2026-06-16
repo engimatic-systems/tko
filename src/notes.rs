@@ -57,16 +57,9 @@ pub fn show_note(store: &TicketStore, id: &str, note_match: &str) -> Result<Stri
     let ticket = store
         .load(id)
         .map_err(|error| NotesError::new(error.to_string()))?;
-    let needle = note_match.to_ascii_lowercase();
     let matches = note_entries(&ticket.body)
         .into_iter()
-        .filter(|entry| {
-            entry.title.to_ascii_lowercase().contains(&needle)
-                || entry
-                    .timestamp
-                    .as_ref()
-                    .is_some_and(|timestamp| timestamp.to_ascii_lowercase().contains(&needle))
-        })
+        .filter(|entry| contains_ascii_case_insensitive(entry.heading, note_match))
         .collect::<Vec<_>>();
 
     match matches.len() {
@@ -194,4 +187,14 @@ fn ensure_trailing_newline(mut text: String) -> String {
         text.push('\n');
     }
     text
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
