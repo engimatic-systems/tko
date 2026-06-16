@@ -45,17 +45,19 @@ pub struct Finding {
     pub message: String,
 }
 
-impl Finding {
-    pub fn format(&self) -> String {
+impl fmt::Display for Finding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.severity {
-            Severity::Warning => format!(
+            Severity::Warning => write!(
+                formatter,
                 "{}:{}: {} warning: {}",
                 self.path.display(),
                 self.line,
                 self.code,
                 self.message
             ),
-            Severity::Failure => format!(
+            Severity::Failure => write!(
+                formatter,
                 "{}:{}: {} {}",
                 self.path.display(),
                 self.line,

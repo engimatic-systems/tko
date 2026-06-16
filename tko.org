@@ -48,6 +48,7 @@ Generated files in this scaffold:
 # Generated from tko.org. Do not edit by hand.
 
 /target/
+.#*
 #+end_src
 
 ** Cargo Manifest
@@ -1940,8 +1941,9 @@ without knowing individual rule semantics.
 #+begin_example
 Finding:
   records path, line, stable lint code, severity, and message
-  formats warnings as "<path>:<line>: <code> warning: <message>"
-  formats failures as "<path>:<line>: <code> <message>"
+  implements Display as the canonical report-line format
+  displays warnings as "<path>:<line>: <code> warning: <message>"
+  displays failures as "<path>:<line>: <code> <message>"
 
 has_failures:
   returns true when any finding has failure severity
@@ -1995,17 +1997,19 @@ pub struct Finding {
     pub message: String,
 }
 
-impl Finding {
-    pub fn format(&self) -> String {
+impl fmt::Display for Finding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.severity {
-            Severity::Warning => format!(
+            Severity::Warning => write!(
+                formatter,
                 "{}:{}: {} warning: {}",
                 self.path.display(),
                 self.line,
                 self.code,
                 self.message
             ),
-            Severity::Failure => format!(
+            Severity::Failure => write!(
+                formatter,
                 "{}:{}: {} {}",
                 self.path.display(),
                 self.line,
@@ -2675,7 +2679,7 @@ fn run_lint(args: LintArgs) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     for finding in &findings {
-        println!("{}", finding.format());
+        println!("{finding}");
     }
 
     if crate::lint::has_failures(&findings) {

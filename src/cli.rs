@@ -431,7 +431,7 @@ fn run_lint(args: LintArgs) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     for finding in &findings {
-        println!("{}", finding.format());
+        println!("{finding}");
     }
 
     if crate::lint::has_failures(&findings) {
