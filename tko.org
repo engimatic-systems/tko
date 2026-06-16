@@ -82,25 +82,97 @@ tempfile = "3.23"
 :CUSTOM_ID: check-surface
 :END:
 
+The Makefile is the local verification and install surface. Ordinary source
+consumers can build and test from committed generated files without Emacs.
+
+- =check= runs the Rust test suite from committed source.
+- =tangle-check= tangles from =tko.org=, requires generated files to be clean,
+  then runs =check=.
+- =install= runs =check= before installing this checkout with =cargo install
+  --path .=.
+- =install-smoke= installs into a temporary root and verifies the installed
+  =tko help= command runs.
+
+The command runners and install paths stay configurable through =CARGO=,
+=EMACS=, =PREFIX=, =INSTALL_ROOT=, and =CARGO_INSTALL_FLAGS=.
+
 #+begin_src makefile :tangle Makefile
 # Generated from tko.org. Do not edit by hand.
 
 CARGO ?= cargo
 EMACS ?= emacs
+PREFIX ?= $(HOME)/.local
+INSTALL_ROOT ?= $(PREFIX)
+CARGO_INSTALL_FLAGS ?= --locked
 
 TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
 
-.PHONY: tangle check test
+.PHONY: tangle tangle-check check test install install-smoke
 
 tangle:
 	$(EMACS) --batch --eval "(progn (require 'org) (require 'ob-tangle) (setq org-confirm-babel-evaluate nil) (org-babel-tangle-file \"tko.org\"))"
 
-check: tangle
+tangle-check: tangle
 	git diff --exit-code -- $(TANGLE_OUTPUTS)
+	$(MAKE) check
+
+check:
 	$(CARGO) test
 
 test:
 	$(CARGO) test
+
+install: check
+	$(CARGO) install --path . --root $(INSTALL_ROOT) --force $(CARGO_INSTALL_FLAGS)
+
+install-smoke:
+	tmp="$$(mktemp -d)"; $(MAKE) install INSTALL_ROOT="$$tmp" CARGO_INSTALL_FLAGS="--locked --debug"; "$$tmp/bin/tko" help >/dev/null
+#+end_src
+
+** Install And Switch Runbook
+:PROPERTIES:
+:CUSTOM_ID: install-and-switch-runbook
+:END:
+
+Use this only after the Rust train has landed into a reviewed branch, release,
+or commit.
+
+Pre-switch checks:
+
+#+begin_src sh
+mise exec -- make check
+mise exec -- make install-smoke
+TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- notes pla-gq0a
+TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- show pla-gq0a --note calibration
+#+end_src
+
+Canonical property precondition:
+
+Existing tickets must already use =TKO_*= property keys before switch-over. If a
+repository still has old property names, migrate it with a separate reviewed
+one-shot script before installing the Rust binary.
+
+Switch local binary:
+
+#+begin_src sh
+rm -f /home/rosin/.local/bin/tko
+mise exec -- make install INSTALL_ROOT=/home/rosin/.local
+PATH=/home/rosin/.local/bin:$PATH tko help
+PATH=/home/rosin/.local/bin:$PATH tko ready -T tko
+PATH=/home/rosin/.local/bin:$PATH tko notes pla-gq0a
+#+end_src
+
+Rollback:
+
+#+begin_src sh
+ln -sfn /home/rosin/projects/tko/tko.sh /home/rosin/.local/bin/tko
+PATH=/home/rosin/.local/bin:$PATH tko help
+#+end_src
+
+Current pre-switch symlink:
+
+#+begin_src text
+/home/rosin/.local/bin/tko -> /home/rosin/projects/tko/tko.sh
 #+end_src
 
 * Rust Sources
