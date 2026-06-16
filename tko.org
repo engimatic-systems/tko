@@ -1931,6 +1931,22 @@ fn file_stem(path: &Path) -> Result<String> {
 :CUSTOM_ID: lint-rules
 :END:
 
+Lint checks are read-only validations over ticket Org files. Findings carry a
+stable code, severity, source path, line, and message so the CLI can print them
+without knowing individual rule semantics.
+
+*** Lint model
+
+#+begin_example
+Finding:
+  records path, line, stable lint code, severity, and message
+  formats warnings as "<path>:<line>: <code> warning: <message>"
+  formats failures as "<path>:<line>: <code> <message>"
+
+has_failures:
+  returns true when any finding has failure severity
+#+end_example
+
 #+begin_src rust :tangle src/lint.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -1999,6 +2015,27 @@ impl Finding {
         }
     }
 }
+#+end_src
+
+*** Lint entry points
+
+#+begin_example
+lint_store(store):
+  collect ticket paths from storage
+  lint each ticket path
+  return all findings
+
+lint_id_or_path(store, id_or_path):
+  treat an existing filesystem path as a direct target
+  otherwise resolve the argument as a ticket id or partial id
+  lint the resolved path
+
+lint_path(path):
+  read the ticket text
+  run all lint rule groups against the text
+#+end_example
+
+#+begin_src rust :tangle src/lint.rs
 
 pub fn lint_store(store: &TicketStore) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
@@ -2036,6 +2073,19 @@ pub fn has_failures(findings: &[Finding]) -> bool {
         .iter()
         .any(|finding| finding.severity == Severity::Failure)
 }
+#+end_src
+
+*** Semantic heading rules
+
+#+begin_example
+lint_semantic_headings(path, text):
+  scan Org headings line by line
+  consider only canonical semantic headings
+  emit L002 failure when a semantic heading is not level 2
+  emit L001 failure when a semantic heading appears more than once
+#+end_example
+
+#+begin_src rust :tangle src/lint.rs
 
 fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -2070,6 +2120,20 @@ fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     }
     findings
 }
+#+end_src
+
+*** Note title rules
+
+#+begin_example
+lint_note_titles(path, text):
+  find each level-2 Notes section
+  inspect level-3 note headings until the next level-1 or level-2 heading
+  ignore timestamp prefix when present
+  emit L003 warning when note title is over 50 characters
+  emit L003 failure when note title is over 72 characters
+#+end_example
+
+#+begin_src rust :tangle src/lint.rs
 
 fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -2116,6 +2180,23 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
     }
     findings
 }
+#+end_src
+
+*** Lint parsing helpers
+
+#+begin_example
+org_heading(line):
+  parse leading stars followed by one space as an Org heading
+  return heading level and trimmed title
+
+semantic_heading(title):
+  normalize known semantic heading names to canonical display text
+
+note_title_after_timestamp(title):
+  remove a leading [timestamp] prefix when present
+#+end_example
+
+#+begin_src rust :tangle src/lint.rs
 
 fn org_heading(line: &str) -> Option<(usize, &str)> {
     let stars = line.chars().take_while(|ch| *ch == '*').count();
@@ -3309,6 +3390,15 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
 }
 #+end_src
 
+*** Lint test fixture
+
+#+begin_example
+Fixture:
+  create a temporary ticket store
+  write ticket text by id
+  run the compiled tko binary with TICKETS_DIR pointed at the fixture store
+#+end_example
+
 #+begin_src rust :tangle tests/lint.rs
 // Generated from tko.org. Do not edit by hand.
 
@@ -3348,6 +3438,18 @@ impl Fixture {
             .expect("tko command should run")
     }
 }
+#+end_src
+
+*** Lint accepts clean tickets
+
+#+begin_example
+lint clean:
+  given canonical semantic headings and a short note title
+  exits successfully
+  prints no findings
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 #[test]
 fn lint_passes_clean_ticket() {
@@ -3362,6 +3464,18 @@ fn lint_passes_clean_ticket() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
 }
+#+end_src
+
+*** Lint warning behavior
+
+#+begin_example
+lint note title target length:
+  given a note title over 50 characters and no hard failures
+  exits successfully
+  prints an L003 warning
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 #[test]
 fn lint_warning_for_note_title_target_exits_successfully() {
@@ -3379,6 +3493,19 @@ fn lint_warning_for_note_title_target_exits_successfully() {
     assert!(stdout.contains("L003 warning"));
     assert!(stdout.contains("51 > 50"));
 }
+#+end_src
+
+*** Lint failure behavior
+
+#+begin_example
+lint hard failures:
+  given duplicate semantic headings, wrong semantic heading level, and a long note title
+  exits with status 2
+  prints L001, L002, and L003 failure findings
+  reports lint failure on stderr
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 #[test]
 fn lint_fails_duplicate_bad_level_and_long_note() {
@@ -3401,6 +3528,17 @@ fn lint_fails_duplicate_bad_level_and_long_note() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("lint failed"));
 }
+#+end_src
+
+*** Lint path targets
+
+#+begin_example
+lint path target:
+  accepts a filesystem path instead of a ticket id
+  reports findings against the displayed path and line number
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 #[test]
 fn lint_accepts_path_targets() {
@@ -3413,6 +3551,18 @@ fn lint_accepts_path_targets() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(&format!("{}:3: L002", display_path(&path))));
 }
+#+end_src
+
+*** Lint all tickets
+
+#+begin_example
+lint without target:
+  checks every ticket in the store
+  exits with status 2 if any ticket has a failure
+  prints only tickets with findings
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 #[test]
 fn lint_without_target_checks_all_tickets() {
@@ -3427,6 +3577,16 @@ fn lint_without_target_checks_all_tickets() {
     assert!(stdout.contains("sys-bad.org:3: L002"));
     assert!(!stdout.contains("sys-clean.org"));
 }
+#+end_src
+
+*** Lint test helpers
+
+#+begin_example
+display_path(path):
+  return the platform display string used by finding output
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
 
 fn display_path(path: &Path) -> String {
     path.display().to_string()
