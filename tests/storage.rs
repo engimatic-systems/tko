@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
-    MigrationAction, StorageError, TicketStore, discover_tickets_dir, format_list_value,
-    lint_legacy_property_keys, load_ticket, migrate_legacy_properties, parse_list_value,
+    StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
+    parse_list_value,
 };
 
 fn write(path: &Path, text: &str) {
@@ -55,19 +55,16 @@ fn loads_canonical_ticket_properties_and_body() {
 }
 
 #[test]
-fn missing_optional_properties_default_and_legacy_keys_are_ignored() {
+fn missing_canonical_properties_use_defaults() {
     let temp = tempdir().expect("tempdir");
     let tickets = temp.path().join(".tickets");
     fs::create_dir(&tickets).expect("tickets dir");
-    let path = tickets.join("sys-legacy.org");
-    write(
-        &path,
-        ":PROPERTIES:\n:TK_STATUS: closed\n:TK_PRIORITY: 0\n:END:\n\n* Legacy ticket\n",
-    );
+    let path = tickets.join("sys-defaults.org");
+    write(&path, ":PROPERTIES:\n:END:\n\n* Defaulted ticket\n");
 
     let ticket = load_ticket(&path).expect("load ticket");
 
-    assert_eq!(ticket.id, "sys-legacy");
+    assert_eq!(ticket.id, "sys-defaults");
     assert_eq!(ticket.properties.status, "open");
     assert_eq!(ticket.properties.priority, 2);
     assert!(ticket.properties.deps.is_empty());
@@ -135,75 +132,4 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     assert!(existing_text.contains(":TKO_STATUS: closed"));
     let missing_text = fs::read_to_string(missing).expect("read missing");
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
-}
-
-#[test]
-fn migration_dry_run_reports_without_writing_and_apply_renames() {
-    let temp = tempdir().expect("tempdir");
-    let path = temp.path().join("sys-legacy.org");
-    write(
-        &path,
-        ":PROPERTIES:\n:TK_STATUS: open\n:TK_TAGS: [repo/tko]\n:END:\n\n* Legacy\n",
-    );
-
-    let dry_run = migrate_legacy_properties(&path, false).expect("dry run");
-    assert_eq!(dry_run.actions.len(), 2);
-    assert_eq!(
-        dry_run.actions[0],
-        MigrationAction::Rename {
-            legacy_key: "TK_STATUS".to_string(),
-            canonical_key: "TKO_STATUS".to_string(),
-            value: "open".to_string(),
-        }
-    );
-    let unchanged = fs::read_to_string(&path).expect("read unchanged");
-    assert!(unchanged.contains(":TK_STATUS: open"));
-
-    let apply = migrate_legacy_properties(&path, true).expect("apply");
-    assert_eq!(apply.actions.len(), 2);
-    let migrated = fs::read_to_string(&path).expect("read migrated");
-    assert!(migrated.contains(":TKO_STATUS: open"));
-    assert!(migrated.contains(":TKO_TAGS: [repo/tko]"));
-    assert!(!migrated.contains(":TK_STATUS: open"));
-}
-
-#[test]
-fn migration_removes_matching_legacy_keys_and_reports_conflicts() {
-    let temp = tempdir().expect("tempdir");
-    let matching = temp.path().join("sys-matching.org");
-    write(
-        &matching,
-        ":PROPERTIES:\n:TKO_STATUS: open\n:TK_STATUS: open\n:END:\n\n* Matching\n",
-    );
-    let report = migrate_legacy_properties(&matching, true).expect("matching migration");
-    assert_eq!(report.actions.len(), 1);
-    let matching_text = fs::read_to_string(&matching).expect("read matching");
-    assert!(matching_text.contains(":TKO_STATUS: open"));
-    assert!(!matching_text.contains(":TK_STATUS: open\n"));
-
-    let conflict = temp.path().join("sys-conflict.org");
-    write(
-        &conflict,
-        ":PROPERTIES:\n:TKO_STATUS: open\n:TK_STATUS: closed\n:END:\n\n* Conflict\n",
-    );
-    let report = migrate_legacy_properties(&conflict, true).expect("conflict migration");
-    assert!(report.actions.is_empty());
-    assert_eq!(report.conflicts.len(), 1);
-    let conflict_text = fs::read_to_string(&conflict).expect("read conflict");
-    assert!(conflict_text.contains(":TKO_STATUS: open"));
-    assert!(conflict_text.contains(":TK_STATUS: closed"));
-}
-
-#[test]
-fn l004_reports_legacy_keys_in_active_property_drawer() {
-    let temp = tempdir().expect("tempdir");
-    let path = temp.path().join("sys-legacy.org");
-    write(&path, ":PROPERTIES:\n:TK_STATUS: open\n:END:\n\n* Legacy\n");
-
-    let findings = lint_legacy_property_keys(&path).expect("lint");
-
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].code, "L004");
-    assert_eq!(findings[0].line, 2);
-    assert!(findings[0].message.contains("TK_STATUS"));
 }
