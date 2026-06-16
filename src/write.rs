@@ -149,43 +149,6 @@ pub fn remove_tags(store: &TicketStore, id: &str, tags: &[String]) -> Result<Str
     mutate_tags(store, id, tags, Mutation::Remove)
 }
 
-pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) -> Result<String> {
-    let resolved = resolved_id(store, id)?;
-    let path = store
-        .resolve_id(&resolved)
-        .map_err(|error| WriteError::new(error.to_string()))?;
-    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
-    let title = title.trim();
-    if title.is_empty() {
-        return Err(WriteError::new("note title is required"));
-    }
-    if title.contains("\\n") {
-        return Err(WriteError::new(
-            "note title must not contain escaped newlines",
-        ));
-    }
-    if title.contains('\n') {
-        return Err(WriteError::new("note title must be one line"));
-    }
-    if title.chars().count() > 72 {
-        return Err(WriteError::new("note title exceeds 72 characters"));
-    }
-    let body = body.map(expand_escaped_newlines).unwrap_or_default();
-
-    let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
-    let mut note = format!("*** {timestamp} {title}\n");
-    if !body.is_empty() {
-        note.push_str(&body);
-        if !note.ends_with('\n') {
-            note.push('\n');
-        }
-    }
-
-    let updated = append_note(document, &note);
-    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
-    Ok(format!("Note added to {resolved}\n"))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mutation {
     Add,
@@ -360,6 +323,43 @@ fn relation_message(
             format!("Link not present: {id} <-> {target}\n")
         }
     }
+}
+
+pub fn add_note(store: &TicketStore, id: &str, title: &str, body: Option<&str>) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    let path = store
+        .resolve_id(&resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(WriteError::new("note title is required"));
+    }
+    if title.contains("\\n") {
+        return Err(WriteError::new(
+            "note title must not contain escaped newlines",
+        ));
+    }
+    if title.contains('\n') {
+        return Err(WriteError::new("note title must be one line"));
+    }
+    if title.chars().count() > 72 {
+        return Err(WriteError::new("note title exceeds 72 characters"));
+    }
+    let body = body.map(expand_escaped_newlines).unwrap_or_default();
+
+    let timestamp = Utc::now().format("[%Y-%m-%d %a %H:%MZ]").to_string();
+    let mut note = format!("*** {timestamp} {title}\n");
+    if !body.is_empty() {
+        note.push_str(&body);
+        if !note.ends_with('\n') {
+            note.push('\n');
+        }
+    }
+
+    let updated = append_note(document, &note);
+    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(format!("Note added to {resolved}\n"))
 }
 
 fn append_note(mut document: String, note: &str) -> String {
