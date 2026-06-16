@@ -6,7 +6,7 @@ use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Read};
+use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -305,15 +305,12 @@ where
             &args.id,
             &args.tags,
         )),
-        Some(Command::AddNote(args)) => {
-            let body = note_body(&args)?;
-            print_write(crate::write::add_note(
-                &write_store(false)?,
-                &args.id,
-                &args.title,
-                body.as_deref(),
-            ))
-        }
+        Some(Command::AddNote(args)) => print_write(crate::write::add_note(
+            &write_store(false)?,
+            &args.id,
+            &args.title,
+            args.body.as_deref(),
+        )),
         Some(Command::Ready(args)) => {
             let store = read_store()?;
             let filters = filters(args.filters, None)?;
@@ -398,20 +395,6 @@ fn split_tags(tags: Option<String>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(ToOwned::to_owned)
         .collect()
-}
-
-fn note_body(args: &AddNoteArgs) -> Result<Option<String>, String> {
-    if args.body.is_some() {
-        Ok(args.body.clone())
-    } else if !io::stdin().is_terminal() {
-        let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(Some(text))
-    } else {
-        Ok(None)
-    }
 }
 
 fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {

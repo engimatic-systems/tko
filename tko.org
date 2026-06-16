@@ -1821,7 +1821,7 @@ use crate::write::CreateTicket;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Read};
+use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -2120,15 +2120,12 @@ where
             &args.id,
             &args.tags,
         )),
-        Some(Command::AddNote(args)) => {
-            let body = note_body(&args)?;
-            print_write(crate::write::add_note(
-                &write_store(false)?,
-                &args.id,
-                &args.title,
-                body.as_deref(),
-            ))
-        }
+        Some(Command::AddNote(args)) => print_write(crate::write::add_note(
+            &write_store(false)?,
+            &args.id,
+            &args.title,
+            args.body.as_deref(),
+        )),
         Some(Command::Ready(args)) => {
             let store = read_store()?;
             let filters = filters(args.filters, None)?;
@@ -2213,20 +2210,6 @@ fn split_tags(tags: Option<String>) -> Vec<String> {
         .filter(|tag| !tag.is_empty())
         .map(ToOwned::to_owned)
         .collect()
-}
-
-fn note_body(args: &AddNoteArgs) -> Result<Option<String>, String> {
-    if args.body.is_some() {
-        Ok(args.body.clone())
-    } else if !io::stdin().is_terminal() {
-        let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(Some(text))
-    } else {
-        Ok(None)
-    }
 }
 
 fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> {
@@ -2685,7 +2668,7 @@ fn lines(output: &str) -> Vec<&str> {
 // Generated from tko.org. Do not edit by hand.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use tempfile::TempDir;
 
 fn tko_bin() -> &'static str {
@@ -2908,24 +2891,6 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     );
     let text = fixture.read("sys-b");
     assert!(text.contains("] Title only\n"));
-
-    let mut child = Command::new(tko_bin())
-        .args(["add-note", "sys-a", "--title", "Piped title"])
-        .env("TICKETS_DIR", &fixture.tickets_dir)
-        .current_dir(fixture.temp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn tko");
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin");
-        stdin.write_all(b"Piped body\n").expect("write stdin");
-    }
-    let output = child.wait_with_output().expect("wait");
-    assert!(output.status.success());
-    let text = fixture.read("sys-a");
-    assert!(text.contains("] Piped title\nPiped body\n"));
 
     let output = fixture.run(&["add-note", "sys-a"]);
     assert_eq!(output.status.code(), Some(2));

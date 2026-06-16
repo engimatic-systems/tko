@@ -1,7 +1,7 @@
 // Generated from tko.org. Do not edit by hand.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use tempfile::TempDir;
 
 fn tko_bin() -> &'static str {
@@ -224,24 +224,6 @@ fn add_note_creates_level_two_notes_and_level_three_entries() {
     );
     let text = fixture.read("sys-b");
     assert!(text.contains("] Title only\n"));
-
-    let mut child = Command::new(tko_bin())
-        .args(["add-note", "sys-a", "--title", "Piped title"])
-        .env("TICKETS_DIR", &fixture.tickets_dir)
-        .current_dir(fixture.temp.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn tko");
-    {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().expect("stdin");
-        stdin.write_all(b"Piped body\n").expect("write stdin");
-    }
-    let output = child.wait_with_output().expect("wait");
-    assert!(output.status.success());
-    let text = fixture.read("sys-a");
-    assert!(text.contains("] Piped title\nPiped body\n"));
 
     let output = fixture.run(&["add-note", "sys-a"]);
     assert_eq!(output.status.code(), Some(2));
