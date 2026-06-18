@@ -63,7 +63,7 @@ enum Command {
     /// Append a timestamped note.
     #[command(name = "add-note")]
     AddNote(AddNoteArgs),
-    /// Output tickets as JSON objects, optionally filtered.
+    /// List tickets matching a predicate filter (summary; --output id|json).
     Query(QueryArgs),
     /// Validate semantic headings and lint rules L001-L003, including L003 note-title length.
     Lint(LintArgs),
@@ -166,8 +166,32 @@ struct AddNoteArgs {
 
 #[derive(Debug, Args)]
 struct QueryArgs {
-    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary, help = "Output format")]
     output: OutputArg,
+    #[arg(
+        value_name = "PREDICATE",
+        help = "Filter expression; omit to match all tickets",
+        long_help = "\
+Filter expression; omit to match all tickets.
+
+Grammar (keywords are case-sensitive):
+  FIELD OP VALUE        OP: = != < <= > >=  (priority compares numerically)
+  FIELD contain VALUE   membership test on a plural field (deps, links, tags)
+  FIELD in [A, B, C]    scalar field equals any listed value
+  has FIELD / no FIELD  field present / absent
+  and  or  not  ( )     combine and group
+
+Scalar fields: id status type assignee external-ref parent created title priority
+Plural fields:  deps links tags
+
+Examples:
+  tko query status = open
+  tko query priority <= 2 and status != closed
+  tko query tags contain area/infra
+  tko query status in [open, in_progress]
+  tko query has parent and no assignee
+  tko query (status = open or status = blocked) and priority <= 2"
+    )]
     predicate: Vec<String>,
 }
 

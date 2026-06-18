@@ -2923,7 +2923,7 @@ enum Command {
     /// Append a timestamped note.
     #[command(name = "add-note")]
     AddNote(AddNoteArgs),
-    /// Output tickets as JSON objects, optionally filtered.
+    /// List tickets matching a predicate filter (summary; --output id|json).
     Query(QueryArgs),
     /// Validate semantic headings and lint rules L001-L003, including L003 note-title length.
     Lint(LintArgs),
@@ -3057,8 +3057,32 @@ accept optional lint target
 
 #[derive(Debug, Args)]
 struct QueryArgs {
-    #[arg(long, value_enum, default_value_t = OutputArg::Id)]
+    #[arg(long, value_enum, default_value_t = OutputArg::Summary, help = "Output format")]
     output: OutputArg,
+    #[arg(
+        value_name = "PREDICATE",
+        help = "Filter expression; omit to match all tickets",
+        long_help = "\
+Filter expression; omit to match all tickets.
+
+Grammar (keywords are case-sensitive):
+  FIELD OP VALUE        OP: = != < <= > >=  (priority compares numerically)
+  FIELD contain VALUE   membership test on a plural field (deps, links, tags)
+  FIELD in [A, B, C]    scalar field equals any listed value
+  has FIELD / no FIELD  field present / absent
+  and  or  not  ( )     combine and group
+
+Scalar fields: id status type assignee external-ref parent created title priority
+Plural fields:  deps links tags
+
+Examples:
+  tko query status = open
+  tko query priority <= 2 and status != closed
+  tko query tags contain area/infra
+  tko query status in [open, in_progress]
+  tko query has parent and no assignee
+  tko query (status = open or status = blocked) and priority <= 2"
+    )]
     predicate: Vec<String>,
 }
 
@@ -3882,8 +3906,8 @@ fn list_ready_and_blocked_use_filters_and_dependency_state() {
 *** Output modes
 
 #+begin_example
-query defaults to ids
-summary and json modes preserve field shape
+query defaults to summary, like list and ready
+id and json modes preserve field shape
 #+end_example
 
 #+begin_src rust :tangle tests/read.rs
@@ -3892,7 +3916,13 @@ summary and json modes preserve field shape
 fn output_modes_cover_ids_summaries_and_json() {
     let fixture = Fixture::new();
 
-    let ids = fixture.stdout(&["query", "status", "=", "open"]);
+    let default_out = fixture.stdout(&["query", "status", "=", "open"]);
+    assert_eq!(
+        default_out,
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
+    );
+
+    let ids = fixture.stdout(&["query", "--output", "id", "status", "=", "open"]);
     assert_eq!(ids, "sys-a\nsys-b\n");
 
     let summary = fixture.stdout(&["query", "--output", "summary", "status", "=", "open"]);
@@ -3928,6 +3958,8 @@ fn query_dsl_supports_boolean_membership_and_presence() {
 
     let repo = fixture.stdout(&[
         "query",
+        "--output",
+        "id",
         "status",
         "in",
         "[open,",
@@ -3940,12 +3972,12 @@ fn query_dsl_supports_boolean_membership_and_presence() {
     assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
 
     let complex = fixture.stdout(&[
-        "query", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
+        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
         "contain", "archived",
     ]);
     assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
 
-    let no_deps = fixture.stdout(&["query", "no", "deps"]);
+    let no_deps = fixture.stdout(&["query", "--output", "id", "no", "deps"]);
     assert_eq!(lines(&no_deps), ["sys-a", "sys-c"]);
 }
 #+end_src
