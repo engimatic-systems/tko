@@ -624,12 +624,17 @@ Compatibility: this command is not implemented in the Bash tool.
 Usage:
 
 ```text
-tko query [predicate]
+tko query [--output id|summary|json] [predicate]
 ```
 
-Outputs one compact JSON object per ticket in filename sort order.
+Emits matching tickets in filename sort order. `--output` selects the format
+(default `summary`, consistent with `list`/`ready`/`blocked`):
 
-Default fields:
+- `summary` — one `id [status] :: title <- [deps]` line per ticket.
+- `id` — one ticket ID per line (for shell pipelines).
+- `json` — one compact JSON object per ticket.
+
+The `json` object shape is:
 
 ```json
 {
