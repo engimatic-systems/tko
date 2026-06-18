@@ -1,0 +1,103 @@
+name: release
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tko-x86_64-unknown-linux-musl.tar.gz
+            binary: tko
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: tko-x86_64-pc-windows-msvc.zip
+            binary: tko.exe
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install linux target dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: install rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: test
+        run: cargo test --locked
+
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: package linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/tko
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" dist/tko/
+          tar -C dist/tko -czf "${{ matrix.archive }}" "${{ matrix.binary }}"
+
+      - name: package windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/tko
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" dist/tko/
+          Compress-Archive -Path "dist/tko/${{ matrix.binary }}" -DestinationPath "${{ matrix.archive }}"
+
+      - name: upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: tko-*
+          merge-multiple: true
+
+      - name: write checksums
+        run: |
+          cd dist
+          sha256sum tko-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: publish github release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --notes "tko $TAG binary release."
+          fi
