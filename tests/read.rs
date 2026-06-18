@@ -116,7 +116,13 @@ fn list_ready_and_blocked_use_filters_and_dependency_state() {
 fn output_modes_cover_ids_summaries_and_json() {
     let fixture = Fixture::new();
 
-    let ids = fixture.stdout(&["query", "status", "=", "open"]);
+    let default_out = fixture.stdout(&["query", "status", "=", "open"]);
+    assert_eq!(
+        default_out,
+        "sys-a    [open] :: Alpha <- []\nsys-b    [open] :: Bravo <- [sys-a]\n"
+    );
+
+    let ids = fixture.stdout(&["query", "--output", "id", "status", "=", "open"]);
     assert_eq!(ids, "sys-a\nsys-b\n");
 
     let summary = fixture.stdout(&["query", "--output", "summary", "status", "=", "open"]);
@@ -143,6 +149,8 @@ fn query_dsl_supports_boolean_membership_and_presence() {
 
     let repo = fixture.stdout(&[
         "query",
+        "--output",
+        "id",
         "status",
         "in",
         "[open,",
@@ -155,12 +163,12 @@ fn query_dsl_supports_boolean_membership_and_presence() {
     assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
 
     let complex = fixture.stdout(&[
-        "query", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
+        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
         "contain", "archived",
     ]);
     assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
 
-    let no_deps = fixture.stdout(&["query", "no", "deps"]);
+    let no_deps = fixture.stdout(&["query", "--output", "id", "no", "deps"]);
     assert_eq!(lines(&no_deps), ["sys-a", "sys-c"]);
 }
 
