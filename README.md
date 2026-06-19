@@ -63,16 +63,30 @@ tko add-note "$id" --title "Pinned" --body "compose pins server@v0.30"
 tko close "$id"                            # close by evidence
 ```
 
-Find tickets with the predicate DSL:
+Filter with the predicate DSL (quote predicates containing `<` `>` `(` `)`):
 
 ```sh
-tko query status = open                    # summary of open tickets
-tko query priority <= 2 and has assignee   # combine conditions
-tko query --output id no deps              # just ids, for pipelines
+tko query status = open                       # default output: summary lines
+tko query 'status in [open, in_progress]'     # membership
+tko query 'priority <= 2 and has assignee'    # compare + presence, combined
+tko query 'has parent and no assignee'        # presence / absence
+tko query --output id no deps                 # ids only, for pipelines
 ```
 
-Run `tko help` for the full command list and `tko query --help` for the filter
-grammar.
+Grammar (keywords are case-sensitive):
+
+```text
+FIELD OP VALUE         OP: = != < <= > >=   (priority compares numerically)
+FIELD contain VALUE    membership in a plural field (deps, links, tags)
+FIELD in [A, B, C]     scalar field equals any listed value
+has FIELD / no FIELD   field present / absent
+and  or  not  ( )       combine and group
+```
+
+- **Scalar fields:** `id` `status` `type` `assignee` `external-ref` `parent` `created` `title` `priority`
+- **Plural fields:** `deps` `links` `tags`
+
+Run `tko help` for all commands; `tko query --help` documents this same grammar.
 
 ## Build From Source
 
