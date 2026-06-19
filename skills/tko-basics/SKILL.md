@@ -33,11 +33,11 @@ Other day-one commands: `tko create`, `tko status`, `tko dep` / `tko tag`,
 ## A full cycle
 
 ```console
-$ tko create "Pin netbird image tags" -t task -p 2
+$ tko create "Document install command" -t task -p 2
 pla-ab12
 $ tko start pla-ab12
 Updated pla-ab12 -> in_progress
-$ tko add-note pla-ab12 --title "Pinned" --body "compose pins server@v0.30, dashboard@v2.9"
+$ tko add-note pla-ab12 --title "Verified" --body "cargo test --locked passed"
 Note added to pla-ab12
 $ tko close pla-ab12
 Updated pla-ab12 -> closed

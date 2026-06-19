@@ -186,11 +186,11 @@ Plural fields:  deps links tags
 
 Examples:
   tko query status = open
-  tko query priority <= 2 and status != closed
+  tko query 'priority <= 2 and status != closed'
   tko query tags contain area/infra
-  tko query status in [open, in_progress]
+  tko query 'status in [open, in_progress]'
   tko query has parent and no assignee
-  tko query (status = open or status = blocked) and priority <= 2"
+  tko query '(status = open or status = blocked) and priority <= 2'"
     )]
     predicate: Vec<String>,
 }
