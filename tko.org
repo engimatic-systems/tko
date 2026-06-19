@@ -63,7 +63,7 @@ Generated files in this scaffold:
 
 [package]
 name = "tko"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -204,8 +204,8 @@ Pre-switch checks:
 #+begin_src sh
 mise exec -- make check
 mise exec -- make install-smoke
-TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- notes pla-gq0a
-TICKETS_DIR=/home/rosin/sys/.tickets mise exec -- cargo run --quiet -- show pla-gq0a --note calibration
+TICKETS_DIR="$PWD/.tickets" mise exec -- cargo run --quiet -- notes <ticket-id>
+TICKETS_DIR="$PWD/.tickets" mise exec -- cargo run --quiet -- show <ticket-id> --note <note-query>
 #+end_src
 
 Canonical property precondition:
@@ -217,24 +217,24 @@ one-shot script before installing the Rust binary.
 Switch local binary:
 
 #+begin_src sh
-rm -f /home/rosin/.local/bin/tko
-mise exec -- make install INSTALL_ROOT=/home/rosin/.local
-PATH=/home/rosin/.local/bin:$PATH tko help
-PATH=/home/rosin/.local/bin:$PATH tko ready -T tko
-PATH=/home/rosin/.local/bin:$PATH tko notes pla-gq0a
+rm -f "$HOME/.local/bin/tko"
+mise exec -- make install INSTALL_ROOT="$HOME/.local"
+PATH="$HOME/.local/bin:$PATH" tko help
+PATH="$HOME/.local/bin:$PATH" tko ready -T tko
+PATH="$HOME/.local/bin:$PATH" tko notes <ticket-id>
 #+end_src
 
 Rollback:
 
 #+begin_src sh
-ln -sfn /home/rosin/projects/tko/tko.sh /home/rosin/.local/bin/tko
-PATH=/home/rosin/.local/bin:$PATH tko help
+ln -sfn "$HOME/projects/tko/tko.sh" "$HOME/.local/bin/tko"
+PATH="$HOME/.local/bin:$PATH" tko help
 #+end_src
 
 Current pre-switch symlink:
 
 #+begin_src text
-/home/rosin/.local/bin/tko -> /home/rosin/projects/tko/tko.sh
+$HOME/.local/bin/tko -> $HOME/projects/tko/tko.sh
 #+end_src
 
 * Rust Sources
@@ -3077,11 +3077,11 @@ Plural fields:  deps links tags
 
 Examples:
   tko query status = open
-  tko query priority <= 2 and status != closed
+  tko query 'priority <= 2 and status != closed'
   tko query tags contain area/infra
-  tko query status in [open, in_progress]
+  tko query 'status in [open, in_progress]'
   tko query has parent and no assignee
-  tko query (status = open or status = blocked) and priority <= 2"
+  tko query '(status = open or status = blocked) and priority <= 2'"
     )]
     predicate: Vec<String>,
 }

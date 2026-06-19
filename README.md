@@ -23,13 +23,13 @@ query tool required.
 
 Download the latest binary release from:
 
-https://github.com/orgzeronine/tko/releases/latest
+https://github.com/engimatic-systems/tko/releases/latest
 
 Linux x86_64:
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-curl -L https://github.com/orgzeronine/tko/releases/latest/download/tko-x86_64-unknown-linux-musl.tar.gz |
+curl -L https://github.com/engimatic-systems/tko/releases/latest/download/tko-x86_64-unknown-linux-musl.tar.gz |
   tar -xz -C "$HOME/.local/bin"
 "$HOME/.local/bin/tko" help
 ```
@@ -42,7 +42,7 @@ Windows x86_64, from PowerShell:
 $InstallDir = "$env:LOCALAPPDATA\tko\bin"
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 $Zip = "$env:TEMP\tko.zip"
-Invoke-WebRequest -Uri "https://github.com/orgzeronine/tko/releases/latest/download/tko-x86_64-pc-windows-msvc.zip" -OutFile $Zip
+Invoke-WebRequest -Uri "https://github.com/engimatic-systems/tko/releases/latest/download/tko-x86_64-pc-windows-msvc.zip" -OutFile $Zip
 Expand-Archive -Path $Zip -DestinationPath $InstallDir -Force
 & "$InstallDir\tko.exe" help
 ```
@@ -55,19 +55,19 @@ Create a store and walk the basic loop:
 
 ```sh
 tko init                                   # create ./.tickets
-id=$(tko create "Pin image tags" -t task -p 2)
+id=$(tko create "Document install command" -t task -p 2)
 tko ready                                  # what's actionable now
 tko show --full "$id"                      # read the whole ticket
 tko start "$id"                            # status -> in_progress
-tko add-note "$id" --title "Pinned" --body "compose pins server@v0.30"
+tko add-note "$id" --title "Verified" --body "cargo test --locked passed"
 tko close "$id"                            # close by evidence
 ```
 
-Filter with the predicate DSL (quote predicates containing `<` `>` `(` `)`):
+Filter with the predicate DSL (quote predicates containing `<` `>` `[` `]` `(` `)`):
 
 ```sh
 tko query status = open                       # default output: summary lines
-tko query 'status in [open, in_progress]'     # membership
+tko query 'status in [open, in_progress]'     # scalar alternatives
 tko query 'priority <= 2 and has assignee'    # compare + presence, combined
 tko query 'has parent and no assignee'        # presence / absence
 tko query --output id no deps                 # ids only, for pipelines
@@ -97,11 +97,11 @@ cargo build --release --locked
 
 ## Release
 
-Push a version tag:
+Push a version tag matching `Cargo.toml`:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
-The release workflow builds Linux and Windows binaries, uploads them as workflow artifacts, creates a GitHub Release for the tag, and attaches both archives plus `SHA256SUMS`.
+The release workflow builds Linux and Windows binaries, uploads them as workflow artifacts, creates a GitHub Release for the tag, and attaches both archives plus `SHA256SUMS`. The install links above point to `releases/latest`, which updates after the tag release completes.
