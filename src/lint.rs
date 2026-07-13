@@ -1,7 +1,7 @@
 // Generated from tko.org. Do not edit by hand.
 
 use crate::storage::{
-    TicketStore, locate_section, org_heading, parse_ticket, semantic_headings, type_shape,
+    TicketStore, drawer_property, locate_section, org_heading, semantic_headings, type_shape,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -175,16 +175,14 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
 }
 
 fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
-    let Ok(ticket) = parse_ticket(path, text) else {
-        return Vec::new();
-    };
-    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+    let ticket_type = drawer_property(text, "TKO_TYPE").unwrap_or_else(|| "task".to_string());
+    let Some(shape) = type_shape(&ticket_type) else {
         return Vec::new();
     };
 
     let mut findings = Vec::new();
     let mut required = shape.required_at_create.to_vec();
-    if ticket.properties.status == "closed" {
+    if drawer_property(text, "TKO_STATUS").as_deref() == Some("closed") {
         required.extend_from_slice(shape.required_at_close);
     }
     for heading in required {

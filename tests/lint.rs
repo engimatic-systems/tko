@@ -251,6 +251,21 @@ fn lint_skips_typed_rules_for_unknown_types() {
 }
 
 #[test]
+fn lint_l005_survives_malformed_list_properties() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-mal",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:TKO_STATUS: closed\n:TKO_LINKS: not-a-list\n:END:\n\n* Malformed\n\n** Question\n\nQ?\n\n** Resolution\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-mal"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L005 required section is empty: Resolution (type decision)"));
+}
+
+#[test]
 fn lint_ignores_semantic_words_inside_note_bodies() {
     let fixture = Fixture::new();
     fixture.write(

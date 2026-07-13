@@ -872,13 +872,31 @@ struct PropertyEntry {
 
 *** Property parsing helpers
 
+=drawer_property= reads one key straight from the top drawer text without
+parsing the full ticket, so callers (lint) can extract =TKO_TYPE= and
+=TKO_STATUS= even when other properties (for example a malformed list) would
+make full-ticket parsing fail.
+
 #+begin_example
 find top-level property drawer bounds
 parse :KEY: value lines
 default optional and list properties
+drawer_property(text, key): one trimmed drawer value, independent of
+  full-ticket parsing; None when absent or blank
 #+end_example
 
 #+begin_src rust :tangle src/storage.rs
+
+pub fn drawer_property(text: &str, key: &str) -> Option<String> {
+    let document = OrgDocument::parse(text);
+    document
+        .drawer?
+        .entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .map(|entry| entry.value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
 
 fn parse_property_drawer(lines: &[String]) -> Option<PropertyDrawer> {
     if lines
@@ -2760,7 +2778,7 @@ has_failures:
 // Generated from tko.org. Do not edit by hand.
 
 use crate::storage::{
-    TicketStore, locate_section, org_heading, parse_ticket, semantic_headings, type_shape,
+    TicketStore, drawer_property, locate_section, org_heading, semantic_headings, type_shape,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -2988,10 +3006,11 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
 
 *** Type shape rules
 
-Both rules consume the storage type shape table; the ticket type comes from
-=TKO_TYPE= in the property drawer (default =task=). Files whose drawer does not
-parse, or whose type has no shape row, skip these rules; the structural rules
-above still run.
+Both rules consume the storage type shape table. The ticket type and status
+come from a direct drawer scan (=TKO_TYPE= default =task=, =TKO_STATUS=
+default =open=), independent of full-ticket parsing — a malformed list
+property elsewhere in the drawer must not silence typed lint. Only a type with
+no shape row skips these rules; the structural rules above always run.
 
 - =L005= (failure): a type-required section is missing or empty.
   =required_at_create= sections are checked on every ticket;
@@ -3002,7 +3021,8 @@ above still run.
 
 #+begin_example
 lint_type_shape(path, text):
-  parse the ticket; skip typed rules on parse failure or unknown type
+  read TKO_TYPE and TKO_STATUS straight from the drawer (defaults task/open)
+  skip typed rules only when the type has no shape row
   check required-at-create sections always,
     required-at-close sections only when status is closed
   emit L005 failure at the heading line when a required section is empty,
@@ -3014,16 +3034,14 @@ lint_type_shape(path, text):
 #+begin_src rust :tangle src/lint.rs
 
 fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
-    let Ok(ticket) = parse_ticket(path, text) else {
-        return Vec::new();
-    };
-    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+    let ticket_type = drawer_property(text, "TKO_TYPE").unwrap_or_else(|| "task".to_string());
+    let Some(shape) = type_shape(&ticket_type) else {
         return Vec::new();
     };
 
     let mut findings = Vec::new();
     let mut required = shape.required_at_create.to_vec();
-    if ticket.properties.status == "closed" {
+    if drawer_property(text, "TKO_STATUS").as_deref() == Some("closed") {
         required.extend_from_slice(shape.required_at_close);
     }
     for heading in required {
@@ -5655,6 +5673,31 @@ fn lint_skips_typed_rules_for_unknown_types() {
     assert!(stdout.contains("L002"));
     assert!(!stdout.contains("L005"));
     assert!(!stdout.contains("L006"));
+}
+#+end_src
+
+*** Typed rules survive malformed properties
+
+#+begin_example
+a drawer whose list property fails full-ticket parsing must not silence
+typed lint: type and status come from a direct drawer scan
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_l005_survives_malformed_list_properties() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-mal",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:TKO_STATUS: closed\n:TKO_LINKS: not-a-list\n:END:\n\n* Malformed\n\n** Question\n\nQ?\n\n** Resolution\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-mal"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L005 required section is empty: Resolution (type decision)"));
 }
 #+end_src
 

@@ -886,9 +886,11 @@ words there are note structure, not ticket sections. Level-2 headings are
 always scanned, so a duplicate `** Notes` still fails `L001`. `L005` anchors
 on level-2 headings and is unaffected.
 
-The ticket type comes from `TKO_TYPE` in the property drawer, defaulting to
-`task`. Files with an unknown type, or whose property drawer fails to parse,
-skip `L005`/`L006`; `L001`-`L003` still run.
+The ticket type and status come from a direct scan of the property drawer
+(`TKO_TYPE`, default `task`; `TKO_STATUS`, default `open`), independent of
+full-ticket parsing — a malformed property elsewhere in the drawer (for
+example a bad list value) does not disable typed lint. Only files with an
+unknown type skip `L005`/`L006`; `L001`-`L003` always run.
 
 Output format:
 
