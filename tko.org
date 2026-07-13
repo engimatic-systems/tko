@@ -481,6 +481,7 @@ this table; it knows nothing about CLI flags or lint codes.
 TypeShape row per type: scaffold, required-at-create, required-at-close, allowed
 type_shape looks a type name up in the table
 valid_types derives the canonical type-name list from the table
+semantic_headings derives the full heading vocabulary from the allowed lists
 #+end_example
 
 #+begin_src rust :tangle src/storage.rs
@@ -574,12 +575,88 @@ static TYPE_SHAPES: &[TypeShape] = &[
 static TYPE_NAMES: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| TYPE_SHAPES.iter().map(|shape| shape.name).collect());
 
+static SEMANTIC_HEADINGS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut headings = Vec::new();
+    for shape in TYPE_SHAPES {
+        for heading in shape.allowed {
+            if !headings.contains(heading) {
+                headings.push(heading);
+            }
+        }
+    }
+    headings
+});
+
 pub fn type_shape(ticket_type: &str) -> Option<&'static TypeShape> {
     TYPE_SHAPES.iter().find(|shape| shape.name == ticket_type)
 }
 
 pub fn valid_types() -> &'static [&'static str] {
     &TYPE_NAMES
+}
+
+pub fn semantic_headings() -> &'static [&'static str] {
+    &SEMANTIC_HEADINGS
+}
+#+end_src
+
+*** Section scanning
+
+Shared heading and section primitives for the write-path close gate and lint.
+A section is the text under a level-2 heading up to the next heading of level 2
+or above; a deeper heading inside the section counts as content. Heading names
+match ASCII-case-insensitively. Only the first matching heading is scanned.
+
+#+begin_example
+org_heading(line):
+  parse leading stars plus one space into heading level and trimmed title
+
+locate_section(text, heading):
+  return the 0-based line index of the level-2 heading and whether the
+  section holds any non-whitespace line before the next level <= 2 heading
+
+section_has_content(text, heading):
+  locate_section, demanding content
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
+
+pub fn org_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
+}
+
+pub fn locate_section(text: &str, heading: &str) -> Option<(usize, bool)> {
+    let mut section_line = None;
+    for (index, line) in text.lines().enumerate() {
+        if let Some((level, title)) = org_heading(line) {
+            if level <= 2 {
+                if section_line.is_some() {
+                    return section_line.map(|line| (line, false));
+                }
+                if level == 2 && title.eq_ignore_ascii_case(heading) {
+                    section_line = Some(index);
+                }
+                continue;
+            }
+        }
+        if section_line.is_some() && !line.trim().is_empty() {
+            return section_line.map(|line| (line, true));
+        }
+    }
+    section_line.map(|line| (line, false))
+}
+
+pub fn section_has_content(text: &str, heading: &str) -> bool {
+    locate_section(text, heading).is_some_and(|(_, has_content)| has_content)
 }
 #+end_src
 
@@ -1773,7 +1850,10 @@ shape table (decision/research take =question=, incident takes =impact=).
 #+begin_src rust :tangle src/write.rs
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, TypeShape, format_list_value, type_shape, valid_types};
+use crate::storage::{
+    TicketStore, TypeShape, format_list_value, org_heading, section_has_content, type_shape,
+    valid_types,
+};
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
@@ -2055,17 +2135,12 @@ write_close_reason(store, resolved, reason):
   expand escaped newlines in the reason
   write the reason into the required-at-close section on disk
 
-section_has_content(body, heading):
-  scan the level-2 section under the case-insensitive heading
-  content is any non-whitespace line before the next heading of level <= 2
-
 write_into_section(document, heading, paragraph):
   append the section heading at the end when absent, like append_note
   fill an empty section with the paragraph
   append the paragraph after existing section content, never clobbering it
 
-org_heading(line):
-  parse an Org heading line into level and title
+section scanning (org_heading, section_has_content) is shared from storage
 #+end_example
 
 #+begin_src rust :tangle src/write.rs
@@ -2114,25 +2189,6 @@ fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Resu
     Ok(())
 }
 
-fn section_has_content(body: &str, heading: &str) -> bool {
-    let mut in_section = false;
-    for line in body.lines() {
-        if let Some((level, title)) = org_heading(line) {
-            if level <= 2 {
-                if in_section {
-                    return false;
-                }
-                in_section = level == 2 && title.eq_ignore_ascii_case(heading);
-                continue;
-            }
-        }
-        if in_section && !line.trim().is_empty() {
-            return true;
-        }
-    }
-    false
-}
-
 fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
     let lines = document.split_inclusive('\n').collect::<Vec<_>>();
     let Some(heading_index) = lines.iter().position(|line| {
@@ -2178,19 +2234,6 @@ fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String 
         updated.push_str(&lines[end..].concat());
     }
     updated
-}
-
-fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let trimmed = line.trim_end_matches(['\r', '\n']);
-    let bytes = trimmed.as_bytes();
-    let mut stars = 0usize;
-    while matches!(bytes.get(stars), Some(b'*')) {
-        stars += 1;
-    }
-    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
-        return None;
-    }
-    Some((stars, trimmed[stars + 1..].trim_end()))
 }
 #+end_src
 
@@ -2696,6 +2739,10 @@ Lint checks are read-only validations over ticket Org files. Findings carry a
 stable code, severity, source path, line, and message so the CLI can print them
 without knowing individual rule semantics.
 
+Type-aware rules (L005/L006) consume the storage type shape table and section
+scanning primitives; lint owns no type or heading vocabulary of its own. L004
+stays reserved for legacy =TK_*= migration failures per SPEC.md.
+
 *** Lint model
 
 #+begin_example
@@ -2712,7 +2759,9 @@ has_failures:
 #+begin_src rust :tangle src/lint.rs
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::TicketStore;
+use crate::storage::{
+    TicketStore, locate_section, org_heading, parse_ticket, semantic_headings, type_shape,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -2829,6 +2878,7 @@ pub fn lint_path(path: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     findings.extend(lint_semantic_headings(path, &text));
     findings.extend(lint_note_titles(path, &text));
+    findings.extend(lint_type_shape(path, &text));
     Ok(findings)
 }
 
@@ -2938,15 +2988,98 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
 }
 #+end_src
 
-*** Lint parsing helpers
+*** Type shape rules
+
+Both rules consume the storage type shape table; the ticket type comes from
+=TKO_TYPE= in the property drawer (default =task=). Files whose drawer does not
+parse, or whose type has no shape row, skip these rules; the structural rules
+above still run.
+
+- =L005= (failure): a type-required section is missing or empty.
+  =required_at_create= sections are checked on every ticket;
+  =required_at_close= sections only when =TKO_STATUS= is =closed=, so an open
+  decision with an empty Resolution is clean.
+- =L006= (warning): a known semantic heading present on a type whose allowed
+  list excludes it.
 
 #+begin_example
-org_heading(line):
-  parse leading ASCII stars followed by one space as an Org heading
-  return heading level and trimmed title
+lint_type_shape(path, text):
+  parse the ticket; skip typed rules on parse failure or unknown type
+  check required-at-create sections always,
+    required-at-close sections only when status is closed
+  emit L005 failure at the heading line when a required section is empty,
+    at line 1 when the heading is missing
+  emit L006 warning for each known semantic heading outside the type's
+    allowed list
+#+end_example
 
+#+begin_src rust :tangle src/lint.rs
+
+fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
+    let Ok(ticket) = parse_ticket(path, text) else {
+        return Vec::new();
+    };
+    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+        return Vec::new();
+    };
+
+    let mut findings = Vec::new();
+    let mut required = shape.required_at_create.to_vec();
+    if ticket.properties.status == "closed" {
+        required.extend_from_slice(shape.required_at_close);
+    }
+    for heading in required {
+        match locate_section(text, heading) {
+            Some((_, true)) => {}
+            Some((line, false)) => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: line + 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section is empty: {heading} (type {})", shape.name),
+            }),
+            None => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section missing: {heading} (type {})", shape.name),
+            }),
+        }
+    }
+
+    for (index, line) in text.lines().enumerate() {
+        let Some((_, title)) = org_heading(line) else {
+            continue;
+        };
+        let Some(canonical) = semantic_heading(title) else {
+            continue;
+        };
+        if !shape.allowed.contains(&canonical) {
+            findings.push(Finding {
+                path: path.to_path_buf(),
+                line: index + 1,
+                code: "L006",
+                severity: Severity::Warning,
+                message: format!(
+                    "semantic heading does not apply to type {}: {canonical}",
+                    shape.name
+                ),
+            });
+        }
+    }
+    findings
+}
+#+end_src
+
+*** Lint parsing helpers
+
+The heading parser is shared from storage; the semantic vocabulary is the
+storage table's union of allowed headings, so lint names no headings itself.
+
+#+begin_example
 semantic_heading(title):
-  match known semantic heading names without allocating normalized copies
+  match the storage-derived semantic heading vocabulary case-insensitively
 
 note_title_after_timestamp(title):
   remove a leading [timestamp] prefix when present
@@ -2954,33 +3087,12 @@ note_title_after_timestamp(title):
 
 #+begin_src rust :tangle src/lint.rs
 
-fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let bytes = line.as_bytes();
-    let mut stars = 0usize;
-    while matches!(bytes.get(stars), Some(b'*')) {
-        stars += 1;
-    }
-    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
-        return None;
-    }
-    Some((stars, line[stars + 1..].trim_end()))
-}
-
 fn semantic_heading(title: &str) -> Option<&'static str> {
     let title = title.trim();
-    if title.eq_ignore_ascii_case("description") {
-        Some("Description")
-    } else if title.eq_ignore_ascii_case("scope") {
-        Some("Scope")
-    } else if title.eq_ignore_ascii_case("design") {
-        Some("Design")
-    } else if title.eq_ignore_ascii_case("acceptance criteria") {
-        Some("Acceptance Criteria")
-    } else if title.eq_ignore_ascii_case("notes") {
-        Some("Notes")
-    } else {
-        None
-    }
+    semantic_headings()
+        .iter()
+        .find(|heading| title.eq_ignore_ascii_case(heading))
+        .copied()
 }
 
 fn note_title_after_timestamp(note_title: &str) -> &str {
@@ -3333,7 +3445,7 @@ enum Command {
     AddNote(AddNoteArgs),
     /// List tickets matching a predicate filter (summary; --output id|json).
     Query(QueryArgs),
-    /// Validate semantic headings and lint rules L001-L003, including L003 note-title length.
+    /// Validate lint rules L001-L003 and L005-L006 (L004 reserved): semantic headings, L003 note-title length, typed sections.
     Lint(LintArgs),
     /// List note headings as timestamp plus title.
     Notes(IdArgs),
@@ -3968,6 +4080,25 @@ fn help_documents_typed_create_and_close_flags() {
 }
 #+end_src
 
+*** Help documents typed lint rules
+
+#+begin_example
+lint help names L005/L006 and keeps L004 reserved
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
+
+#[test]
+fn help_documents_typed_lint_rules() {
+    let lint = run(&["lint", "--help"]);
+    assert!(lint.status.success());
+    let lint_help = String::from_utf8_lossy(&lint.stdout);
+    assert!(lint_help.contains("L005"));
+    assert!(lint_help.contains("L006"));
+    assert!(lint_help.contains("L004 reserved"));
+}
+#+end_src
+
 ** Storage Tests
 :PROPERTIES:
 :CUSTOM_ID: storage-tests
@@ -3987,7 +4118,7 @@ use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
     StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
-    parse_list_value, type_shape, valid_types,
+    locate_section, parse_list_value, semantic_headings, type_shape, valid_types,
 };
 
 fn write(path: &Path, text: &str) {
@@ -4235,6 +4366,43 @@ fn type_shape_table_names_requirements_per_type() {
     );
     assert!(task.required_at_close.is_none());
     assert!(task.allowed.contains(&"Design"));
+}
+#+end_src
+
+*** Section scanning
+
+#+begin_example
+semantic_headings unions every allowed list
+locate_section finds the level-2 heading line and content state
+a level-3 heading inside the section counts as content
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
+
+#[test]
+fn locates_sections_and_derives_semantic_vocabulary() {
+    for heading in [
+        "Description",
+        "Scope",
+        "Design",
+        "Acceptance Criteria",
+        "Notes",
+        "Not yet specified",
+        "Decisions",
+        "Question",
+        "Options",
+        "Resolution",
+        "Findings",
+        "Impact",
+    ] {
+        assert!(semantic_headings().contains(&heading), "missing {heading}");
+    }
+
+    let text = "* Title\n\n** Question\n\nQ?\n\n** Resolution\n\n** Notes\n*** [ts] entry\n";
+    assert_eq!(locate_section(text, "Question"), Some((2, true)));
+    assert_eq!(locate_section(text, "resolution"), Some((6, false)));
+    assert_eq!(locate_section(text, "Notes"), Some((8, true)));
+    assert_eq!(locate_section(text, "Impact"), None);
 }
 #+end_src
 
@@ -5278,6 +5446,198 @@ fn lint_without_target_checks_all_tickets() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("sys-bad.org:3: L002"));
     assert!(!stdout.contains("sys-clean.org"));
+}
+#+end_src
+
+*** Typed tickets lint clean
+
+#+begin_example
+satisfied type shapes produce no findings:
+  open decision with Question content and empty Resolution
+  closed decision with both filled
+  epic with empty scaffold headings
+  open incident with Impact content
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_passes_typed_tickets_with_satisfied_shapes() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-dec-open",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:END:\n\n* Open decision\n\n** Question\n\nQ?\n\n** Resolution\n",
+    );
+    fixture.write(
+        "sys-dec-done",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:TKO_STATUS: closed\n:END:\n\n* Closed decision\n\n** Question\n\nQ?\n\n** Resolution\n\nSettled.\n",
+    );
+    fixture.write(
+        "sys-epic",
+        ":PROPERTIES:\n:TKO_TYPE: epic\n:END:\n\n* Epic\n\n** Not yet specified\n\n** Decisions\n",
+    );
+    fixture.write(
+        "sys-inc",
+        ":PROPERTIES:\n:TKO_TYPE: incident\n:END:\n\n* Incident\n\n** Impact\n\nWrites down 20 minutes.\n\n** Resolution\n",
+    );
+
+    let output = fixture.run(&["lint"]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+}
+#+end_src
+
+*** L005 create-required sections
+
+#+begin_example
+required-at-create sections are checked regardless of status:
+  missing Question heading reports L005 at line 1
+  empty Question section reports L005 at the heading line
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_l005_flags_missing_or_empty_create_sections() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-missing",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:END:\n\n* No question\n\n** Resolution\n",
+    );
+    fixture.write(
+        "sys-empty",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:END:\n\n* Empty question\n\n** Question\n\n** Resolution\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-missing"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sys-missing.org:1: L005 required section missing: Question (type decision)"));
+
+    let output = fixture.run(&["lint", "sys-empty"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sys-empty.org:7: L005 required section is empty: Question (type decision)"));
+}
+#+end_src
+
+*** L005 close-required asymmetry
+
+#+begin_example
+same body, status flipped:
+  open decision with empty Resolution lints clean
+  closed decision with empty Resolution fails L005
+  closed research with empty Findings fails L005
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_l005_checks_close_sections_only_when_closed() {
+    let fixture = Fixture::new();
+    let body = "* Decision\n\n** Question\n\nQ?\n\n** Resolution\n";
+    fixture.write(
+        "sys-open",
+        &format!(":PROPERTIES:\n:TKO_TYPE: decision\n:TKO_STATUS: open\n:END:\n\n{body}"),
+    );
+    fixture.write(
+        "sys-closed",
+        &format!(":PROPERTIES:\n:TKO_TYPE: decision\n:TKO_STATUS: closed\n:END:\n\n{body}"),
+    );
+    fixture.write(
+        "sys-res",
+        ":PROPERTIES:\n:TKO_TYPE: research\n:TKO_STATUS: closed\n:END:\n\n* Research\n\n** Question\n\nQ?\n\n** Findings\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-open"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let output = fixture.run(&["lint", "sys-closed"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L005 required section is empty: Resolution (type decision)"));
+
+    let output = fixture.run(&["lint", "sys-res"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L005 required section is empty: Findings (type research)"));
+}
+#+end_src
+
+*** L006 foreign semantic headings
+
+#+begin_example
+known semantic heading outside the type's allowed list warns without failing:
+  Acceptance Criteria on a decision
+  Not yet specified on a (default) task
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_l006_warns_on_foreign_semantic_headings() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-dec",
+        ":PROPERTIES:\n:TKO_TYPE: decision\n:END:\n\n* Decision\n\n** Question\n\nQ?\n\n** Resolution\n\n** Acceptance Criteria\n\nDone when merged.\n",
+    );
+    fixture.write("sys-task", "* Task\n\n** Not yet specified\n");
+
+    let output = fixture.run(&["lint", "sys-dec"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(
+        "sys-dec.org:13: L006 warning: semantic heading does not apply to type decision: Acceptance Criteria"
+    ));
+
+    let output = fixture.run(&["lint", "sys-task"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(
+        "sys-task.org:3: L006 warning: semantic heading does not apply to type task: Not yet specified"
+    ));
+}
+#+end_src
+
+*** Unknown type skips typed rules
+
+#+begin_example
+unknown TKO_TYPE has no shape row:
+  L005/L006 do not run
+  structural rules still report
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_skips_typed_rules_for_unknown_types() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-odd",
+        ":PROPERTIES:\n:TKO_TYPE: banana\n:END:\n\n* Odd\n\n*** Design\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-odd"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L002"));
+    assert!(!stdout.contains("L005"));
+    assert!(!stdout.contains("L006"));
 }
 #+end_src
 

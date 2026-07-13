@@ -232,10 +232,14 @@ Semantic heading vocabulary:
 - `research`: + `Question`, `Findings`
 - `incident`: + `Impact`, `Findings`, `Resolution`
 
-The type scoping is enforced at create (foreign section flags are refused) and
-at close (required sections must be non-empty). Lint currently recognizes only
-`Description`, `Scope`, `Design`, `Acceptance Criteria`, and `Notes`; lint
-enforcement of the type-scoped vocabulary is planned.
+The type scoping is enforced at create (foreign section flags are refused), at
+close (required sections must be non-empty), and by lint: `L005` fails on a
+missing or empty type-required section, and `L006` warns on a known semantic
+heading foreign to the ticket's type.
+
+Lint recognizes the full vocabulary above; `L001` (duplicates) and `L002`
+(level-2 placement) apply to every semantic heading regardless of the ticket's
+type.
 
 Stable rule: semantic headings must occur at level 2 (`**`) and must not be
 duplicated.
@@ -831,27 +835,49 @@ Usage:
 tko lint [id-or-path]
 ```
 
-Validates semantic heading conventions.
+Validates semantic heading conventions and type shape requirements.
 
 If a path exists, lint that path. Otherwise resolve the argument as a ticket ID.
 With no argument, lint all tickets in filename sort order.
 
 Current lint codes:
 
-- `L001 duplicate semantic heading: <heading>`
-- `L002 semantic heading must be level-2 (**): <heading>`
+- `L001 duplicate semantic heading: <heading>` (failure)
+- `L002 semantic heading must be level-2 (**): <heading>` (failure)
+- `L003 note title exceeds length target or hard limit` (warning/failure)
+- `L005 required section missing/empty: <heading> (type <type>)` (failure)
+- `L006 semantic heading does not apply to type <type>: <heading>` (warning)
 
-Planned lint codes:
+Reserved lint codes:
 
-- `L003 note title exceeds length target or hard limit`
 - `L004 legacy TK_* property key remains after migration`
 
-`L003` should warn above 50 characters and fail above 72 characters for note
-title text after the timestamp. `add-note` should enforce the same hard limit at
-write time.
+`L003` warns above 50 characters and fails above 72 characters for note title
+text after the timestamp. `add-note` enforces the same hard limit at write
+time.
 
-`L004` fails when a known legacy `TK_*` property key remains in the active
-property drawer after migration.
+`L004` is reserved: it will fail when a known legacy `TK_*` property key
+remains in the active property drawer after migration. It is not implemented.
+
+`L005` checks the ticket type's required sections from the type shape table:
+
+- `required at create` sections (`Question` for `decision`/`research`,
+  `Impact` for `incident`) are checked on every ticket regardless of status.
+- `required at close` sections (`Resolution` for `decision`/`incident`,
+  `Findings` for `research`) are checked only when `TKO_STATUS` is `closed`.
+  An open decision with an empty `Resolution` lints clean.
+- An empty section reports at the heading's line; a missing section reports at
+  line 1. Section emptiness matches the close gate: content is any
+  non-whitespace line under the level-2 heading before the next heading of
+  level 2 or above (a deeper heading counts as content).
+
+`L006` warns when a known semantic heading appears on a type whose allowed
+list excludes it (for example `Acceptance Criteria` on a `decision`, or
+`Not yet specified` on a `task`).
+
+The ticket type comes from `TKO_TYPE` in the property drawer, defaulting to
+`task`. Files with an unknown type, or whose property drawer fails to parse,
+skip `L005`/`L006`; `L001`-`L003` still run.
 
 Output format:
 

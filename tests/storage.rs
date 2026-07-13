@@ -5,7 +5,7 @@ use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
     StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
-    parse_list_value, type_shape, valid_types,
+    locate_section, parse_list_value, semantic_headings, type_shape, valid_types,
 };
 
 fn write(path: &Path, text: &str) {
@@ -175,4 +175,30 @@ fn type_shape_table_names_requirements_per_type() {
     );
     assert!(task.required_at_close.is_none());
     assert!(task.allowed.contains(&"Design"));
+}
+
+#[test]
+fn locates_sections_and_derives_semantic_vocabulary() {
+    for heading in [
+        "Description",
+        "Scope",
+        "Design",
+        "Acceptance Criteria",
+        "Notes",
+        "Not yet specified",
+        "Decisions",
+        "Question",
+        "Options",
+        "Resolution",
+        "Findings",
+        "Impact",
+    ] {
+        assert!(semantic_headings().contains(&heading), "missing {heading}");
+    }
+
+    let text = "* Title\n\n** Question\n\nQ?\n\n** Resolution\n\n** Notes\n*** [ts] entry\n";
+    assert_eq!(locate_section(text, "Question"), Some((2, true)));
+    assert_eq!(locate_section(text, "resolution"), Some((6, false)));
+    assert_eq!(locate_section(text, "Notes"), Some((8, true)));
+    assert_eq!(locate_section(text, "Impact"), None);
 }

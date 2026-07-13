@@ -264,12 +264,66 @@ static TYPE_SHAPES: &[TypeShape] = &[
 static TYPE_NAMES: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| TYPE_SHAPES.iter().map(|shape| shape.name).collect());
 
+static SEMANTIC_HEADINGS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut headings = Vec::new();
+    for shape in TYPE_SHAPES {
+        for heading in shape.allowed {
+            if !headings.contains(heading) {
+                headings.push(heading);
+            }
+        }
+    }
+    headings
+});
+
 pub fn type_shape(ticket_type: &str) -> Option<&'static TypeShape> {
     TYPE_SHAPES.iter().find(|shape| shape.name == ticket_type)
 }
 
 pub fn valid_types() -> &'static [&'static str] {
     &TYPE_NAMES
+}
+
+pub fn semantic_headings() -> &'static [&'static str] {
+    &SEMANTIC_HEADINGS
+}
+
+pub fn org_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
+}
+
+pub fn locate_section(text: &str, heading: &str) -> Option<(usize, bool)> {
+    let mut section_line = None;
+    for (index, line) in text.lines().enumerate() {
+        if let Some((level, title)) = org_heading(line) {
+            if level <= 2 {
+                if section_line.is_some() {
+                    return section_line.map(|line| (line, false));
+                }
+                if level == 2 && title.eq_ignore_ascii_case(heading) {
+                    section_line = Some(index);
+                }
+                continue;
+            }
+        }
+        if section_line.is_some() && !line.trim().is_empty() {
+            return section_line.map(|line| (line, true));
+        }
+    }
+    section_line.map(|line| (line, false))
+}
+
+pub fn section_has_content(text: &str, heading: &str) -> bool {
+    locate_section(text, heading).is_some_and(|(_, has_content)| has_content)
 }
 
 pub fn discover_tickets_dir(

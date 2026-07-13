@@ -1,6 +1,8 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::TicketStore;
+use crate::storage::{
+    TicketStore, locate_section, org_heading, parse_ticket, semantic_headings, type_shape,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -96,6 +98,7 @@ pub fn lint_path(path: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     findings.extend(lint_semantic_headings(path, &text));
     findings.extend(lint_note_titles(path, &text));
+    findings.extend(lint_type_shape(path, &text));
     Ok(findings)
 }
 
@@ -177,33 +180,68 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
     findings
 }
 
-fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let bytes = line.as_bytes();
-    let mut stars = 0usize;
-    while matches!(bytes.get(stars), Some(b'*')) {
-        stars += 1;
+fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
+    let Ok(ticket) = parse_ticket(path, text) else {
+        return Vec::new();
+    };
+    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+        return Vec::new();
+    };
+
+    let mut findings = Vec::new();
+    let mut required = shape.required_at_create.to_vec();
+    if ticket.properties.status == "closed" {
+        required.extend_from_slice(shape.required_at_close);
     }
-    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
-        return None;
+    for heading in required {
+        match locate_section(text, heading) {
+            Some((_, true)) => {}
+            Some((line, false)) => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: line + 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section is empty: {heading} (type {})", shape.name),
+            }),
+            None => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section missing: {heading} (type {})", shape.name),
+            }),
+        }
     }
-    Some((stars, line[stars + 1..].trim_end()))
+
+    for (index, line) in text.lines().enumerate() {
+        let Some((_, title)) = org_heading(line) else {
+            continue;
+        };
+        let Some(canonical) = semantic_heading(title) else {
+            continue;
+        };
+        if !shape.allowed.contains(&canonical) {
+            findings.push(Finding {
+                path: path.to_path_buf(),
+                line: index + 1,
+                code: "L006",
+                severity: Severity::Warning,
+                message: format!(
+                    "semantic heading does not apply to type {}: {canonical}",
+                    shape.name
+                ),
+            });
+        }
+    }
+    findings
 }
 
 fn semantic_heading(title: &str) -> Option<&'static str> {
     let title = title.trim();
-    if title.eq_ignore_ascii_case("description") {
-        Some("Description")
-    } else if title.eq_ignore_ascii_case("scope") {
-        Some("Scope")
-    } else if title.eq_ignore_ascii_case("design") {
-        Some("Design")
-    } else if title.eq_ignore_ascii_case("acceptance criteria") {
-        Some("Acceptance Criteria")
-    } else if title.eq_ignore_ascii_case("notes") {
-        Some("Notes")
-    } else {
-        None
-    }
+    semantic_headings()
+        .iter()
+        .find(|heading| title.eq_ignore_ascii_case(heading))
+        .copied()
 }
 
 fn note_title_after_timestamp(note_title: &str) -> &str {
