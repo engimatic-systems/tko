@@ -76,3 +76,13 @@ fn help_documents_typed_create_and_close_flags() {
     assert!(close_help.contains("--reason"));
     assert!(close_help.contains("required close section"));
 }
+
+#[test]
+fn help_documents_typed_lint_rules() {
+    let lint = run(&["lint", "--help"]);
+    assert!(lint.status.success());
+    let lint_help = String::from_utf8_lossy(&lint.stdout);
+    assert!(lint_help.contains("L005"));
+    assert!(lint_help.contains("L006"));
+    assert!(lint_help.contains("L004 reserved"));
+}

@@ -1,6 +1,9 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, TypeShape, format_list_value, type_shape, valid_types};
+use crate::storage::{
+    TicketStore, TypeShape, format_list_value, org_heading, section_has_content, type_shape,
+    valid_types,
+};
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
@@ -235,25 +238,6 @@ fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Resu
     Ok(())
 }
 
-fn section_has_content(body: &str, heading: &str) -> bool {
-    let mut in_section = false;
-    for line in body.lines() {
-        if let Some((level, title)) = org_heading(line) {
-            if level <= 2 {
-                if in_section {
-                    return false;
-                }
-                in_section = level == 2 && title.eq_ignore_ascii_case(heading);
-                continue;
-            }
-        }
-        if in_section && !line.trim().is_empty() {
-            return true;
-        }
-    }
-    false
-}
-
 fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
     let lines = document.split_inclusive('\n').collect::<Vec<_>>();
     let Some(heading_index) = lines.iter().position(|line| {
@@ -299,19 +283,6 @@ fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String 
         updated.push_str(&lines[end..].concat());
     }
     updated
-}
-
-fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let trimmed = line.trim_end_matches(['\r', '\n']);
-    let bytes = trimmed.as_bytes();
-    let mut stars = 0usize;
-    while matches!(bytes.get(stars), Some(b'*')) {
-        stars += 1;
-    }
-    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
-        return None;
-    }
-    Some((stars, trimmed[stars + 1..].trim_end()))
 }
 
 pub fn add_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<String> {
