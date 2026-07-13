@@ -492,6 +492,17 @@ struct PropertyEntry {
     line_index: usize,
 }
 
+pub fn drawer_property(text: &str, key: &str) -> Option<String> {
+    let document = OrgDocument::parse(text);
+    document
+        .drawer?
+        .entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .map(|entry| entry.value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn parse_property_drawer(lines: &[String]) -> Option<PropertyDrawer> {
     if lines
         .first()
