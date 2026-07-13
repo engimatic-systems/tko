@@ -298,9 +298,12 @@ Typed behavior:
   accepted for every type; `--scope`, `--design`, and `--acceptance` apply to
   `task`/`bug`/`feature`/`chore`/`epic`; `--question` applies to `decision` and
   `research`; `--impact` applies to `incident`.
+- Section inputs are normalized before validation: escaped `\n` sequences
+  expand and whitespace trims first, and a value blank after normalization
+  counts as absent (`--question '\n'` refuses like a missing flag).
 - Types with a required create section refuse creation when the flag is missing
-  or blank: `decision ticket requires --question`, `research ticket requires
-  --question`, `incident ticket requires --impact`.
+  or blank after normalization: `decision ticket requires --question`,
+  `research ticket requires --question`, `incident ticket requires --impact`.
 - Type scaffold sections are emitted after any legacy sections: required
   sections carry the flag content; the remaining scaffold sections are emitted
   as empty level-2 headings (`decision`: `Resolution`; `research`: `Findings`;
