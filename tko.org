@@ -2891,10 +2891,14 @@ pub fn has_failures(findings: &[Finding]) -> bool {
 
 *** Semantic heading rules
 
+Note bodies are free-form: headings deeper than level 2 inside a =** Notes=
+section are note structure, not ticket sections, so the semantic scans (L001,
+L002, and L006) skip them via the shared =semantic_heading_lines= walker.
+Level-2 headings are always scanned, so a duplicate =** Notes= still fails.
+
 #+begin_example
 lint_semantic_headings(path, text):
-  scan Org headings line by line
-  consider only canonical semantic headings
+  walk canonical semantic headings outside note bodies
   emit L002 failure when a semantic heading is not level 2
   emit L001 failure when a semantic heading appears more than once
 #+end_example
@@ -2904,13 +2908,7 @@ lint_semantic_headings(path, text):
 fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut seen: HashMap<&'static str, usize> = HashMap::new();
-    for (index, line) in text.lines().enumerate() {
-        let Some((level, title)) = org_heading(line) else {
-            continue;
-        };
-        let Some(canonical) = semantic_heading(title) else {
-            continue;
-        };
+    for (index, level, canonical) in semantic_heading_lines(text) {
         if level != 2 {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -3010,7 +3008,7 @@ lint_type_shape(path, text):
   emit L005 failure at the heading line when a required section is empty,
     at line 1 when the heading is missing
   emit L006 warning for each known semantic heading outside the type's
-    allowed list
+    allowed list, skipping headings inside note bodies
 #+end_example
 
 #+begin_src rust :tangle src/lint.rs
@@ -3048,13 +3046,7 @@ fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
         }
     }
 
-    for (index, line) in text.lines().enumerate() {
-        let Some((_, title)) = org_heading(line) else {
-            continue;
-        };
-        let Some(canonical) = semantic_heading(title) else {
-            continue;
-        };
+    for (index, _, canonical) in semantic_heading_lines(text) {
         if !shape.allowed.contains(&canonical) {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -3078,6 +3070,12 @@ The heading parser is shared from storage; the semantic vocabulary is the
 storage table's union of allowed headings, so lint names no headings itself.
 
 #+begin_example
+semantic_heading_lines(text):
+  walk Org headings, tracking whether the scan is inside a level-2 Notes
+    section (up to the next heading of level <= 2)
+  skip headings deeper than level 2 inside Notes: note bodies are free-form
+  yield (line index, level, canonical heading) for semantic headings
+
 semantic_heading(title):
   match the storage-derived semantic heading vocabulary case-insensitively
 
@@ -3086,6 +3084,25 @@ note_title_after_timestamp(title):
 #+end_example
 
 #+begin_src rust :tangle src/lint.rs
+
+fn semantic_heading_lines(text: &str) -> Vec<(usize, usize, &'static str)> {
+    let mut lines = Vec::new();
+    let mut in_notes = false;
+    for (index, line) in text.lines().enumerate() {
+        let Some((level, title)) = org_heading(line) else {
+            continue;
+        };
+        if level <= 2 {
+            in_notes = level == 2 && title.trim().eq_ignore_ascii_case("Notes");
+        } else if in_notes {
+            continue;
+        }
+        if let Some(canonical) = semantic_heading(title) {
+            lines.push((index, level, canonical));
+        }
+    }
+    lines
+}
 
 fn semantic_heading(title: &str) -> Option<&'static str> {
     let title = title.trim();
@@ -5638,6 +5655,49 @@ fn lint_skips_typed_rules_for_unknown_types() {
     assert!(stdout.contains("L002"));
     assert!(!stdout.contains("L005"));
     assert!(!stdout.contains("L006"));
+}
+#+end_src
+
+*** Note bodies are exempt from semantic scans
+
+#+begin_example
+semantic words as deep headings inside a note body produce no findings
+a level-3 semantic heading outside Notes still fails L002
+a duplicate level-2 Notes heading still fails L001
+#+end_example
+
+#+begin_src rust :tangle tests/lint.rs
+
+#[test]
+fn lint_ignores_semantic_words_inside_note_bodies() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Task\n\n** Description\n\nBody.\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] Weighing options\nProse.\n**** Question\nIs the exemption real?\n**** Resolution\nYes.\n",
+    );
+    fixture.write("sys-out", "* Task\n\n*** Scope\n");
+    fixture.write(
+        "sys-dup",
+        "* Task\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] First\n\n** Notes\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-notes"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let output = fixture.run(&["lint", "sys-out"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L002 semantic heading must be level-2 (**): Scope"));
+
+    let output = fixture.run(&["lint", "sys-dup"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L001 duplicate semantic heading: Notes"));
 }
 #+end_src
 

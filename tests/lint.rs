@@ -250,6 +250,38 @@ fn lint_skips_typed_rules_for_unknown_types() {
     assert!(!stdout.contains("L006"));
 }
 
+#[test]
+fn lint_ignores_semantic_words_inside_note_bodies() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "sys-notes",
+        "* Task\n\n** Description\n\nBody.\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] Weighing options\nProse.\n**** Question\nIs the exemption real?\n**** Resolution\nYes.\n",
+    );
+    fixture.write("sys-out", "* Task\n\n*** Scope\n");
+    fixture.write(
+        "sys-dup",
+        "* Task\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] First\n\n** Notes\n",
+    );
+
+    let output = fixture.run(&["lint", "sys-notes"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let output = fixture.run(&["lint", "sys-out"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L002 semantic heading must be level-2 (**): Scope"));
+
+    let output = fixture.run(&["lint", "sys-dup"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("L001 duplicate semantic heading: Notes"));
+}
+
 fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
