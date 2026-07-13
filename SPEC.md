@@ -241,6 +241,11 @@ Lint recognizes the full vocabulary above; `L001` (duplicates) and `L002`
 (level-2 placement) apply to every semantic heading regardless of the ticket's
 type.
 
+Note bodies are free-form: headings deeper than level 2 inside a `** Notes`
+section (up to the next heading of level 2 or above) are note structure, and
+the semantic-heading rules (`L001`, `L002`, `L006`) do not apply to them.
+Level-2 headings are always in scope, so a duplicate `** Notes` still fails.
+
 Stable rule: semantic headings must occur at level 2 (`**`) and must not be
 duplicated.
 
@@ -874,6 +879,12 @@ remains in the active property drawer after migration. It is not implemented.
 `L006` warns when a known semantic heading appears on a type whose allowed
 list excludes it (for example `Acceptance Criteria` on a `decision`, or
 `Not yet specified` on a `task`).
+
+The semantic-heading scans (`L001`, `L002`, `L006`) skip headings deeper than
+level 2 inside a `** Notes` section: note bodies are free-form, and semantic
+words there are note structure, not ticket sections. Level-2 headings are
+always scanned, so a duplicate `** Notes` still fails `L001`. `L005` anchors
+on level-2 headings and is unaffected.
 
 The ticket type comes from `TKO_TYPE` in the property drawer, defaulting to
 `task`. Files with an unknown type, or whose property drawer fails to parse,

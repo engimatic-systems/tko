@@ -111,13 +111,7 @@ pub fn has_failures(findings: &[Finding]) -> bool {
 fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut seen: HashMap<&'static str, usize> = HashMap::new();
-    for (index, line) in text.lines().enumerate() {
-        let Some((level, title)) = org_heading(line) else {
-            continue;
-        };
-        let Some(canonical) = semantic_heading(title) else {
-            continue;
-        };
+    for (index, level, canonical) in semantic_heading_lines(text) {
         if level != 2 {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -213,13 +207,7 @@ fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
         }
     }
 
-    for (index, line) in text.lines().enumerate() {
-        let Some((_, title)) = org_heading(line) else {
-            continue;
-        };
-        let Some(canonical) = semantic_heading(title) else {
-            continue;
-        };
+    for (index, _, canonical) in semantic_heading_lines(text) {
         if !shape.allowed.contains(&canonical) {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -234,6 +222,25 @@ fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
         }
     }
     findings
+}
+
+fn semantic_heading_lines(text: &str) -> Vec<(usize, usize, &'static str)> {
+    let mut lines = Vec::new();
+    let mut in_notes = false;
+    for (index, line) in text.lines().enumerate() {
+        let Some((level, title)) = org_heading(line) else {
+            continue;
+        };
+        if level <= 2 {
+            in_notes = level == 2 && title.trim().eq_ignore_ascii_case("Notes");
+        } else if in_notes {
+            continue;
+        }
+        if let Some(canonical) = semantic_heading(title) {
+            lines.push((index, level, canonical));
+        }
+    }
+    lines
 }
 
 fn semantic_heading(title: &str) -> Option<&'static str> {
