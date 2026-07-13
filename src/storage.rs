@@ -6,6 +6,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
@@ -172,6 +173,95 @@ impl TicketStore {
         let path = self.resolve_id(id)?;
         set_property(&path, key, value)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeShape {
+    pub name: &'static str,
+    pub scaffold: &'static [&'static str],
+    pub required_at_create: &'static [&'static str],
+    pub required_at_close: &'static [&'static str],
+    pub allowed: &'static [&'static str],
+}
+
+const LEGACY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+
+static TYPE_SHAPES: &[TypeShape] = &[
+    TypeShape {
+        name: "bug",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "feature",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "task",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "epic",
+        scaffold: &["Not yet specified", "Decisions"],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: &[
+            "Description",
+            "Scope",
+            "Design",
+            "Acceptance Criteria",
+            "Not yet specified",
+            "Decisions",
+            "Notes",
+        ],
+    },
+    TypeShape {
+        name: "chore",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "decision",
+        scaffold: &["Question", "Resolution"],
+        required_at_create: &["Question"],
+        required_at_close: &["Resolution"],
+        allowed: &["Description", "Question", "Options", "Resolution", "Notes"],
+    },
+    TypeShape {
+        name: "research",
+        scaffold: &["Question", "Findings"],
+        required_at_create: &["Question"],
+        required_at_close: &["Findings"],
+        allowed: &["Description", "Question", "Findings", "Notes"],
+    },
+    TypeShape {
+        name: "incident",
+        scaffold: &["Impact", "Resolution"],
+        required_at_create: &["Impact"],
+        required_at_close: &["Resolution"],
+        allowed: &["Description", "Impact", "Findings", "Resolution", "Notes"],
+    },
+];
+
+static TYPE_NAMES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| TYPE_SHAPES.iter().map(|shape| shape.name).collect());
+
+pub fn type_shape(ticket_type: &str) -> Option<&'static TypeShape> {
+    TYPE_SHAPES.iter().find(|shape| shape.name == ticket_type)
+}
+
+pub fn valid_types() -> &'static [&'static str] {
+    &TYPE_NAMES
 }
 
 pub fn discover_tickets_dir(

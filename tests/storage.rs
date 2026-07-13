@@ -5,7 +5,7 @@ use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
     StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
-    parse_list_value,
+    parse_list_value, type_shape, valid_types,
 };
 
 fn write(path: &Path, text: &str) {
@@ -149,4 +149,27 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     assert!(existing_text.contains(":TKO_STATUS: closed"));
     let missing_text = fs::read_to_string(missing).expect("read missing");
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
+}
+
+#[test]
+fn type_shape_table_names_requirements_per_type() {
+    assert_eq!(
+        valid_types(),
+        [
+            "bug", "feature", "task", "epic", "chore", "decision", "research", "incident"
+        ]
+    );
+    assert!(type_shape("banana").is_none());
+
+    let decision = type_shape("decision").expect("decision shape");
+    assert_eq!(decision.scaffold, ["Question", "Resolution"]);
+    assert_eq!(decision.required_at_create, ["Question"]);
+    assert_eq!(decision.required_at_close, ["Resolution"]);
+    assert!(decision.allowed.contains(&"Options"));
+    assert!(!decision.allowed.contains(&"Design"));
+
+    let task = type_shape("task").expect("task shape");
+    assert!(task.scaffold.is_empty());
+    assert!(task.required_at_close.is_empty());
+    assert!(task.allowed.contains(&"Design"));
 }
