@@ -49,6 +49,7 @@ pub struct CreateTicket {
 }
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    let input = normalize_sections(input);
     let title = input.title.trim();
     if title.is_empty() {
         return Err(WriteError::new("ticket title is required"));
@@ -105,7 +106,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         input.acceptance.as_deref(),
     );
     for heading in shape.scaffold {
-        match section_input(&input, heading).filter(|body| !body.trim().is_empty()) {
+        match section_input(&input, heading) {
             Some(body) => push_section(&mut text, heading, Some(body)),
             None => push_empty_section(&mut text, heading),
         }
@@ -114,6 +115,23 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     fs::write(store.tickets_dir().join(format!("{id}.org")), text)
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(id)
+}
+
+fn normalize_sections(mut input: CreateTicket) -> CreateTicket {
+    for field in [
+        &mut input.description,
+        &mut input.scope,
+        &mut input.design,
+        &mut input.acceptance,
+        &mut input.question,
+        &mut input.impact,
+    ] {
+        *field = field
+            .take()
+            .map(|value| expand_escaped_newlines(&value).trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+    input
 }
 
 fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
@@ -128,8 +146,7 @@ fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()
         }
     }
     for heading in shape.required_at_create {
-        let given = section_input(input, heading).is_some_and(|body| !body.trim().is_empty());
-        if !given {
+        if section_input(input, heading).is_none() {
             return Err(WriteError::new(format!(
                 "{} ticket requires {}",
                 shape.name,
@@ -574,10 +591,9 @@ fn push_property(text: &mut String, key: &str, value: &str) {
 }
 
 fn push_section(text: &mut String, heading: &str, body: Option<&str>) {
-    let Some(body) = body.map(expand_escaped_newlines) else {
+    let Some(body) = body else {
         return;
     };
-    let body = body.trim();
     if body.is_empty() {
         return;
     }

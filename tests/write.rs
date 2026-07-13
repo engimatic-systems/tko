@@ -195,6 +195,27 @@ fn create_refuses_missing_required_and_foreign_sections() {
 }
 
 #[test]
+fn create_normalizes_section_inputs_before_validation() {
+    let fixture = Fixture::new();
+
+    let output = fixture.run(&["create", "Blank question", "--type", "decision", "--question", "\\n"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires --question"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "Multiline question",
+        "--type",
+        "decision",
+        "--question",
+        "line1\\nline2",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("** Question\n\nline1\nline2\n\n** Resolution\n"));
+}
+
+#[test]
 fn init_creates_ticket_storage_explicitly() {
     let temp = tempfile::tempdir().expect("tempdir");
     let output = Command::new(tko_bin())

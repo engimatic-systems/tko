@@ -1817,12 +1817,15 @@ pub struct CreateTicket {
 #+begin_example
 create(store, cwd, input):
   require a non-empty title
+  normalize section inputs once up front: expand escaped newlines, trim,
+    drop values that are blank after normalization
   validate type and priority
   refuse section flags foreign to the type's allowed headings
   refuse missing content for the type's required-at-create sections
+    (checked on the normalized values)
   allocate an unused id from cwd-derived prefix and time-derived suffix
   resolve optional parent id
-  write .tickets/<id>.org with TKO_* properties and requested body sections
+  write .tickets/<id>.org with TKO_* properties and the normalized sections
   emit the type's scaffold headings after the legacy sections,
     filled from input when the type requires content, empty otherwise
   return id
@@ -1831,6 +1834,7 @@ create(store, cwd, input):
 #+begin_src rust :tangle src/write.rs
 
 pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<String> {
+    let input = normalize_sections(input);
     let title = input.title.trim();
     if title.is_empty() {
         return Err(WriteError::new("ticket title is required"));
@@ -1887,7 +1891,7 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         input.acceptance.as_deref(),
     );
     for heading in shape.scaffold {
-        match section_input(&input, heading).filter(|body| !body.trim().is_empty()) {
+        match section_input(&input, heading) {
             Some(body) => push_section(&mut text, heading, Some(body)),
             None => push_empty_section(&mut text, heading),
         }
@@ -1902,14 +1906,21 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
 *** Typed section validation
 
 Create knows five section flags beyond =--description=; each maps to one
-semantic heading. A flag given for a type whose allowed headings do not include
-that section is refused. Sections the type requires at create must be given
-non-empty content. Description is allowed on every type.
+semantic heading. Section inputs are normalized once before validation:
+escaped newlines expand, whitespace trims, and values blank after
+normalization count as absent. A flag carrying content for a type whose
+allowed headings do not include that section is refused. Sections the type
+requires at create must be non-empty after normalization — =--question '\n'=
+refuses the same as omitting the flag. Description is allowed on every type.
 
 #+begin_example
+normalize_sections(input):
+  expand escaped newlines and trim each section input
+  drop inputs that are blank after normalization
+
 validate_section_inputs(input, shape):
   refuse any given section flag whose heading is not allowed for the type
-  refuse any required-at-create heading whose input is missing or blank
+  refuse any required-at-create heading whose normalized input is absent
 
 section_input(input, heading):
   map a semantic heading to its create input value
@@ -1919,6 +1930,23 @@ section_flag(heading):
 #+end_example
 
 #+begin_src rust :tangle src/write.rs
+
+fn normalize_sections(mut input: CreateTicket) -> CreateTicket {
+    for field in [
+        &mut input.description,
+        &mut input.scope,
+        &mut input.design,
+        &mut input.acceptance,
+        &mut input.question,
+        &mut input.impact,
+    ] {
+        *field = field
+            .take()
+            .map(|value| expand_escaped_newlines(&value).trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+    input
+}
 
 fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
     const SECTION_HEADINGS: &[&str] = &["Scope", "Design", "Acceptance Criteria", "Question", "Impact"];
@@ -1932,8 +1960,7 @@ fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()
         }
     }
     for heading in shape.required_at_create {
-        let given = section_input(input, heading).is_some_and(|body| !body.trim().is_empty());
-        if !given {
+        if section_input(input, heading).is_none() {
             return Err(WriteError::new(format!(
                 "{} ticket requires {}",
                 shape.name,
@@ -2526,8 +2553,7 @@ push_property:
   append one property drawer line
 
 push_section:
-  skip absent or empty bodies
-  expand escaped newlines
+  skip absent or empty bodies (inputs arrive normalized)
   write a second-level Org section
 
 push_empty_section:
@@ -2549,10 +2575,9 @@ fn push_property(text: &mut String, key: &str, value: &str) {
 }
 
 fn push_section(text: &mut String, heading: &str, body: Option<&str>) {
-    let Some(body) = body.map(expand_escaped_newlines) else {
+    let Some(body) = body else {
         return;
     };
-    let body = body.trim();
     if body.is_empty() {
         return;
     }
@@ -4704,6 +4729,38 @@ fn create_refuses_missing_required_and_foreign_sections() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--question does not apply to type task"));
+}
+#+end_src
+
+*** Section input normalization
+
+#+begin_example
+section inputs normalize before validation:
+  a --question that is blank after escape expansion refuses like a missing flag
+  multi-line escaped input still writes real newlines
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
+
+#[test]
+fn create_normalizes_section_inputs_before_validation() {
+    let fixture = Fixture::new();
+
+    let output = fixture.run(&["create", "Blank question", "--type", "decision", "--question", "\\n"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires --question"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "Multiline question",
+        "--type",
+        "decision",
+        "--question",
+        "line1\\nline2",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("** Question\n\nline1\nline2\n\n** Resolution\n"));
 }
 #+end_src
 
