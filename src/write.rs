@@ -97,14 +97,9 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     }
     text.push_str(":END:\n\n");
     text.push_str(&format!("* {title}\n"));
-    push_section(&mut text, "Description", input.description.as_deref());
-    push_section(&mut text, "Scope", input.scope.as_deref());
-    push_section(&mut text, "Design", input.design.as_deref());
-    push_section(
-        &mut text,
-        "Acceptance Criteria",
-        input.acceptance.as_deref(),
-    );
+    if !shape.scaffold.contains(&"Description") {
+        push_section(&mut text, "Description", input.description.as_deref());
+    }
     for heading in shape.scaffold {
         match section_input(&input, heading) {
             Some(body) => push_section(&mut text, heading, Some(body)),
@@ -159,6 +154,7 @@ fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()
 
 fn section_input<'a>(input: &'a CreateTicket, heading: &str) -> Option<&'a str> {
     match heading {
+        "Description" => input.description.as_deref(),
         "Scope" => input.scope.as_deref(),
         "Design" => input.design.as_deref(),
         "Acceptance Criteria" => input.acceptance.as_deref(),

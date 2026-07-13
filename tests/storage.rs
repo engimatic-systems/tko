@@ -169,7 +169,10 @@ fn type_shape_table_names_requirements_per_type() {
     assert!(!decision.allowed.contains(&"Design"));
 
     let task = type_shape("task").expect("task shape");
-    assert!(task.scaffold.is_empty());
+    assert_eq!(
+        task.scaffold,
+        ["Description", "Scope", "Design", "Acceptance Criteria"]
+    );
     assert!(task.required_at_close.is_empty());
     assert!(task.allowed.contains(&"Design"));
 }

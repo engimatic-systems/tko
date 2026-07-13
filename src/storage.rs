@@ -184,33 +184,41 @@ pub struct TypeShape {
     pub allowed: &'static [&'static str],
 }
 
-const LEGACY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+const TASK_FAMILY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+const TASK_FAMILY_SCAFFOLD: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria"];
 
 static TYPE_SHAPES: &[TypeShape] = &[
     TypeShape {
         name: "bug",
-        scaffold: &[],
+        scaffold: TASK_FAMILY_SCAFFOLD,
         required_at_create: &[],
         required_at_close: &[],
-        allowed: LEGACY_ALLOWED,
+        allowed: TASK_FAMILY_ALLOWED,
     },
     TypeShape {
         name: "feature",
-        scaffold: &[],
+        scaffold: TASK_FAMILY_SCAFFOLD,
         required_at_create: &[],
         required_at_close: &[],
-        allowed: LEGACY_ALLOWED,
+        allowed: TASK_FAMILY_ALLOWED,
     },
     TypeShape {
         name: "task",
-        scaffold: &[],
+        scaffold: TASK_FAMILY_SCAFFOLD,
         required_at_create: &[],
         required_at_close: &[],
-        allowed: LEGACY_ALLOWED,
+        allowed: TASK_FAMILY_ALLOWED,
     },
     TypeShape {
         name: "epic",
-        scaffold: &["Not yet specified", "Decisions"],
+        scaffold: &[
+            "Description",
+            "Scope",
+            "Design",
+            "Acceptance Criteria",
+            "Not yet specified",
+            "Decisions",
+        ],
         required_at_create: &[],
         required_at_close: &[],
         allowed: &[
@@ -225,10 +233,10 @@ static TYPE_SHAPES: &[TypeShape] = &[
     },
     TypeShape {
         name: "chore",
-        scaffold: &[],
+        scaffold: TASK_FAMILY_SCAFFOLD,
         required_at_create: &[],
         required_at_close: &[],
-        allowed: LEGACY_ALLOWED,
+        allowed: TASK_FAMILY_ALLOWED,
     },
     TypeShape {
         name: "decision",
