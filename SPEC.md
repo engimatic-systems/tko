@@ -177,15 +177,17 @@ Valid types:
 - `incident`
 
 Each type has a shape: sections scaffolded at create, content required at
-create, and content required before close.
+create, and content required before close. Scaffolded sections are always
+emitted at create — filled from the matching flag when given, an empty level-2
+heading otherwise.
 
-| type                       | required at create | scaffolded at create                    | required non-empty at close |
-|----------------------------|--------------------|-----------------------------------------|-----------------------------|
-| `bug` `feature` `task` `chore` | —              | sections only when flags are given      | —                           |
-| `epic`                     | —                  | + empty `Not yet specified`, `Decisions` | —                          |
-| `decision`                 | `--question`       | `Question` (content), empty `Resolution` | `Resolution`               |
-| `research`                 | `--question`       | `Question` (content), empty `Findings`  | `Findings`                  |
-| `incident`                 | `--impact`         | `Impact` (content), empty `Resolution`  | `Resolution`                |
+| type                       | required at create | scaffolded at create                                          | required non-empty at close |
+|----------------------------|--------------------|---------------------------------------------------------------|-----------------------------|
+| `bug` `feature` `task` `chore` | —              | `Description`, `Scope`, `Design`, `Acceptance Criteria`      | —                           |
+| `epic`                     | —                  | the four above + `Not yet specified`, `Decisions`            | —                           |
+| `decision`                 | `--question`       | `Question` (content), empty `Resolution`                     | `Resolution`                |
+| `research`                 | `--question`       | `Question` (content), empty `Findings`                       | `Findings`                  |
+| `incident`                 | `--impact`         | `Impact` (content), empty `Resolution`                       | `Resolution`                |
 
 Valid priorities:
 
@@ -288,7 +290,6 @@ Behavior:
 - Resolves `--parent` through normal ticket resolution and stores the resolved
   filename stem.
 - Converts escaped `\n` sequences in section options into real newlines.
-- Writes only non-empty optional section bodies.
 - Writes `TKO_TAGS` only when at least one tag is provided.
 
 Typed behavior:
@@ -304,12 +305,16 @@ Typed behavior:
 - Types with a required create section refuse creation when the flag is missing
   or blank after normalization: `decision ticket requires --question`,
   `research ticket requires --question`, `incident ticket requires --impact`.
-- Type scaffold sections are emitted after any legacy sections: required
-  sections carry the flag content; the remaining scaffold sections are emitted
-  as empty level-2 headings (`decision`: `Resolution`; `research`: `Findings`;
-  `incident`: `Resolution`; `epic`: `Not yet specified` and `Decisions`).
-- `task`/`bug`/`feature`/`chore` output is unchanged: no scaffold beyond the
-  requested sections.
+- Every scaffold section for the type (see the shape table) is emitted in
+  table order: filled from the matching flag when given, an empty level-2
+  heading otherwise. `task`/`bug`/`feature`/`chore` always emit
+  `Description`, `Scope`, `Design`, and `Acceptance Criteria`; `epic` adds
+  empty `Not yet specified` and `Decisions`; `decision`/`research`/`incident`
+  emit only their own sections (`Question`/`Impact` content plus the empty
+  close section).
+- `--description` on `decision`/`research`/`incident` (where `Description` is
+  allowed but not scaffolded) writes a `Description` section before the type's
+  scaffold only when content is given.
 
 Compatibility:
 

@@ -153,11 +153,15 @@ fn create_scaffolds_typed_sections() {
 
     let id = fixture.stdout(&["create", "Big effort", "--type", "epic"]);
     let text = fixture.read(id.trim());
-    assert!(text.ends_with("* Big effort\n\n** Not yet specified\n\n** Decisions\n"));
+    assert!(text.ends_with(
+        "* Big effort\n\n** Description\n\n** Scope\n\n** Design\n\n** Acceptance Criteria\n\n** Not yet specified\n\n** Decisions\n"
+    ));
 
     let id = fixture.stdout(&["create", "Plain task", "--description", "Body"]);
     let text = fixture.read(id.trim());
-    assert!(text.ends_with("* Plain task\n\n** Description\n\nBody\n"));
+    assert!(text.ends_with(
+        "* Plain task\n\n** Description\n\nBody\n\n** Scope\n\n** Design\n\n** Acceptance Criteria\n"
+    ));
 }
 
 #[test]
