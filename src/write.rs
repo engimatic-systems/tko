@@ -1,6 +1,6 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, format_list_value};
+use crate::storage::{TicketStore, TypeShape, format_list_value, type_shape, valid_types};
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
@@ -38,6 +38,8 @@ pub struct CreateTicket {
     pub scope: Option<String>,
     pub design: Option<String>,
     pub acceptance: Option<String>,
+    pub question: Option<String>,
+    pub impact: Option<String>,
     pub ticket_type: String,
     pub priority: u8,
     pub assignee: Option<String>,
@@ -53,6 +55,8 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     }
     validate_type(&input.ticket_type)?;
     validate_priority(input.priority)?;
+    let shape = type_shape(&input.ticket_type).expect("validated ticket type");
+    validate_section_inputs(&input, shape)?;
 
     let id = unique_id(store, cwd)?;
     let parent = input
@@ -74,10 +78,14 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = input.assignee.filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input.assignee.as_deref().filter(|value| !value.trim().is_empty()) {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
-    if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
+    if let Some(external_ref) = input
+        .external_ref
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         push_property(&mut text, "TKO_EXTERNAL_REF", external_ref.trim());
     }
     if let Some(parent) = parent {
@@ -96,19 +104,201 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         "Acceptance Criteria",
         input.acceptance.as_deref(),
     );
+    for heading in shape.scaffold {
+        match section_input(&input, heading).filter(|body| !body.trim().is_empty()) {
+            Some(body) => push_section(&mut text, heading, Some(body)),
+            None => push_empty_section(&mut text, heading),
+        }
+    }
 
     fs::write(store.tickets_dir().join(format!("{id}.org")), text)
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(id)
 }
 
+fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
+    const SECTION_HEADINGS: &[&str] = &["Scope", "Design", "Acceptance Criteria", "Question", "Impact"];
+    for heading in SECTION_HEADINGS {
+        if section_input(input, heading).is_some() && !shape.allowed.contains(heading) {
+            return Err(WriteError::new(format!(
+                "{} does not apply to type {}",
+                section_flag(heading),
+                shape.name
+            )));
+        }
+    }
+    for heading in shape.required_at_create {
+        let given = section_input(input, heading).is_some_and(|body| !body.trim().is_empty());
+        if !given {
+            return Err(WriteError::new(format!(
+                "{} ticket requires {}",
+                shape.name,
+                section_flag(heading)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn section_input<'a>(input: &'a CreateTicket, heading: &str) -> Option<&'a str> {
+    match heading {
+        "Scope" => input.scope.as_deref(),
+        "Design" => input.design.as_deref(),
+        "Acceptance Criteria" => input.acceptance.as_deref(),
+        "Question" => input.question.as_deref(),
+        "Impact" => input.impact.as_deref(),
+        _ => None,
+    }
+}
+
+fn section_flag(heading: &str) -> String {
+    match heading {
+        "Acceptance Criteria" => "--acceptance".to_string(),
+        _ => format!("--{}", heading.to_ascii_lowercase().replace(' ', "-")),
+    }
+}
+
 pub fn set_status(store: &TicketStore, id: &str, status: &str) -> Result<String> {
     validate_status(status)?;
     let resolved = resolved_id(store, id)?;
+    if status == "closed" {
+        check_close_requirements(store, &resolved)?;
+    }
     store
         .set_property(&resolved, "TKO_STATUS", status)
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(format!("Updated {resolved} -> {status}\n"))
+}
+
+pub fn close(store: &TicketStore, id: &str, reason: Option<&str>) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    if let Some(reason) = reason {
+        write_close_reason(store, &resolved, reason)?;
+    }
+    set_status(store, &resolved, "closed")
+}
+
+fn check_close_requirements(store: &TicketStore, resolved: &str) -> Result<()> {
+    let ticket = store
+        .load(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+        return Ok(());
+    };
+    for heading in shape.required_at_close {
+        if !section_has_content(&ticket.body, heading) {
+            return Err(WriteError::new(format!(
+                "{} ticket requires non-empty {} before close (or pass --reason)",
+                shape.name, heading
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Result<()> {
+    let ticket = store
+        .load(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let heading = type_shape(&ticket.properties.ticket_type)
+        .and_then(|shape| shape.required_at_close.first())
+        .ok_or_else(|| {
+            WriteError::new(format!(
+                "--reason does not apply to type {}",
+                ticket.properties.ticket_type
+            ))
+        })?;
+    let reason = expand_escaped_newlines(reason);
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(WriteError::new("close reason is empty"));
+    }
+    let path = store
+        .resolve_id(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
+    let updated = write_into_section(&document, heading, reason);
+    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(())
+}
+
+fn section_has_content(body: &str, heading: &str) -> bool {
+    let mut in_section = false;
+    for line in body.lines() {
+        if let Some((level, title)) = org_heading(line) {
+            if level <= 2 {
+                if in_section {
+                    return false;
+                }
+                in_section = level == 2 && title.eq_ignore_ascii_case(heading);
+                continue;
+            }
+        }
+        if in_section && !line.trim().is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
+    let lines = document.split_inclusive('\n').collect::<Vec<_>>();
+    let Some(heading_index) = lines.iter().position(|line| {
+        org_heading(line).is_some_and(|(level, title)| {
+            level == 2 && title.eq_ignore_ascii_case(heading)
+        })
+    }) else {
+        let mut updated = document.to_string();
+        if !updated.ends_with('\n') && !updated.is_empty() {
+            updated.push('\n');
+        }
+        if !updated.is_empty() {
+            updated.push('\n');
+        }
+        updated.push_str(&format!("** {heading}\n\n{paragraph}\n"));
+        return updated;
+    };
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(heading_index + 1)
+        .find_map(|(index, line)| match org_heading(line) {
+            Some((level, _)) if level <= 2 => Some(index),
+            _ => None,
+        })
+        .unwrap_or(lines.len());
+    let existing = lines[heading_index + 1..end].concat();
+    let existing = existing.trim();
+    let content = if existing.is_empty() {
+        paragraph.to_string()
+    } else {
+        format!("{existing}\n\n{paragraph}")
+    };
+    let mut updated = lines[..=heading_index].concat();
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push('\n');
+    updated.push_str(&content);
+    updated.push('\n');
+    if end < lines.len() {
+        updated.push('\n');
+        updated.push_str(&lines[end..].concat());
+    }
+    updated
+}
+
+fn org_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
 }
 
 pub fn add_dependency(store: &TicketStore, id: &str, dep_id: &str) -> Result<String> {
@@ -394,6 +584,10 @@ fn push_section(text: &mut String, heading: &str, body: Option<&str>) {
     text.push_str(&format!("\n** {heading}\n\n{body}\n"));
 }
 
+fn push_empty_section(text: &mut String, heading: &str) {
+    text.push_str(&format!("\n** {heading}\n"));
+}
+
 fn expand_escaped_newlines(value: &str) -> String {
     value.replace("\\n", "\n")
 }
@@ -463,7 +657,7 @@ fn validate_status(status: &str) -> Result<()> {
 }
 
 fn validate_type(ticket_type: &str) -> Result<()> {
-    if matches!(ticket_type, "bug" | "feature" | "task" | "epic" | "chore") {
+    if valid_types().contains(&ticket_type) {
         Ok(())
     } else {
         Err(WriteError::new(format!("invalid type: {ticket_type}")))

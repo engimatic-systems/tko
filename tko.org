@@ -283,6 +283,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
@@ -460,6 +461,115 @@ impl TicketStore {
         let path = self.resolve_id(id)?;
         set_property(&path, key, value)
     }
+}
+#+end_src
+
+*** Type shape table
+
+Pure data: one row per valid ticket type. Write commands and lint both consume
+this table; it knows nothing about CLI flags or lint codes.
+
+- =scaffold= lists type-specific headings emitted at create, in document order.
+- =required_at_create= headings must be given non-empty content at create.
+- =required_at_close= headings must be non-empty before status may reach closed.
+- =allowed= lists every semantic heading valid for the type (Description and
+  Notes are universal).
+
+#+begin_example
+TypeShape row per type: scaffold, required-at-create, required-at-close, allowed
+type_shape looks a type name up in the table
+valid_types derives the canonical type-name list from the table
+#+end_example
+
+#+begin_src rust :tangle src/storage.rs
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeShape {
+    pub name: &'static str,
+    pub scaffold: &'static [&'static str],
+    pub required_at_create: &'static [&'static str],
+    pub required_at_close: &'static [&'static str],
+    pub allowed: &'static [&'static str],
+}
+
+const LEGACY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+
+static TYPE_SHAPES: &[TypeShape] = &[
+    TypeShape {
+        name: "bug",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "feature",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "task",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "epic",
+        scaffold: &["Not yet specified", "Decisions"],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: &[
+            "Description",
+            "Scope",
+            "Design",
+            "Acceptance Criteria",
+            "Not yet specified",
+            "Decisions",
+            "Notes",
+        ],
+    },
+    TypeShape {
+        name: "chore",
+        scaffold: &[],
+        required_at_create: &[],
+        required_at_close: &[],
+        allowed: LEGACY_ALLOWED,
+    },
+    TypeShape {
+        name: "decision",
+        scaffold: &["Question", "Resolution"],
+        required_at_create: &["Question"],
+        required_at_close: &["Resolution"],
+        allowed: &["Description", "Question", "Options", "Resolution", "Notes"],
+    },
+    TypeShape {
+        name: "research",
+        scaffold: &["Question", "Findings"],
+        required_at_create: &["Question"],
+        required_at_close: &["Findings"],
+        allowed: &["Description", "Question", "Findings", "Notes"],
+    },
+    TypeShape {
+        name: "incident",
+        scaffold: &["Impact", "Resolution"],
+        required_at_create: &["Impact"],
+        required_at_close: &["Resolution"],
+        allowed: &["Description", "Impact", "Findings", "Resolution", "Notes"],
+    },
+];
+
+static TYPE_NAMES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| TYPE_SHAPES.iter().map(|shape| shape.name).collect());
+
+pub fn type_shape(ticket_type: &str) -> Option<&'static TypeShape> {
+    TYPE_SHAPES.iter().find(|shape| shape.name == ticket_type)
+}
+
+pub fn valid_types() -> &'static [&'static str] {
+    &TYPE_NAMES
 }
 #+end_src
 
@@ -1647,11 +1757,13 @@ The invariants are:
 
 The module starts with its error type and the explicit input contract for ticket
 creation. Optional fields are written only when present and non-empty.
+=question= and =impact= feed the type-scoped sections required by the type
+shape table (decision/research take =question=, incident takes =impact=).
 
 #+begin_src rust :tangle src/write.rs
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::{TicketStore, format_list_value};
+use crate::storage::{TicketStore, TypeShape, format_list_value, type_shape, valid_types};
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
@@ -1689,6 +1801,8 @@ pub struct CreateTicket {
     pub scope: Option<String>,
     pub design: Option<String>,
     pub acceptance: Option<String>,
+    pub question: Option<String>,
+    pub impact: Option<String>,
     pub ticket_type: String,
     pub priority: u8,
     pub assignee: Option<String>,
@@ -1704,9 +1818,13 @@ pub struct CreateTicket {
 create(store, cwd, input):
   require a non-empty title
   validate type and priority
+  refuse section flags foreign to the type's allowed headings
+  refuse missing content for the type's required-at-create sections
   allocate an unused id from cwd-derived prefix and time-derived suffix
   resolve optional parent id
   write .tickets/<id>.org with TKO_* properties and requested body sections
+  emit the type's scaffold headings after the legacy sections,
+    filled from input when the type requires content, empty otherwise
   return id
 #+end_example
 
@@ -1719,6 +1837,8 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     }
     validate_type(&input.ticket_type)?;
     validate_priority(input.priority)?;
+    let shape = type_shape(&input.ticket_type).expect("validated ticket type");
+    validate_section_inputs(&input, shape)?;
 
     let id = unique_id(store, cwd)?;
     let parent = input
@@ -1740,10 +1860,14 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = input.assignee.filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input.assignee.as_deref().filter(|value| !value.trim().is_empty()) {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
-    if let Some(external_ref) = input.external_ref.filter(|value| !value.trim().is_empty()) {
+    if let Some(external_ref) = input
+        .external_ref
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         push_property(&mut text, "TKO_EXTERNAL_REF", external_ref.trim());
     }
     if let Some(parent) = parent {
@@ -1762,6 +1886,12 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
         "Acceptance Criteria",
         input.acceptance.as_deref(),
     );
+    for heading in shape.scaffold {
+        match section_input(&input, heading).filter(|body| !body.trim().is_empty()) {
+            Some(body) => push_section(&mut text, heading, Some(body)),
+            None => push_empty_section(&mut text, heading),
+        }
+    }
 
     fs::write(store.tickets_dir().join(format!("{id}.org")), text)
         .map_err(|error| WriteError::new(error.to_string()))?;
@@ -1769,14 +1899,91 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
 }
 #+end_src
 
+*** Typed section validation
+
+Create knows five section flags beyond =--description=; each maps to one
+semantic heading. A flag given for a type whose allowed headings do not include
+that section is refused. Sections the type requires at create must be given
+non-empty content. Description is allowed on every type.
+
+#+begin_example
+validate_section_inputs(input, shape):
+  refuse any given section flag whose heading is not allowed for the type
+  refuse any required-at-create heading whose input is missing or blank
+
+section_input(input, heading):
+  map a semantic heading to its create input value
+
+section_flag(heading):
+  map a semantic heading to its CLI flag spelling
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
+
+fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
+    const SECTION_HEADINGS: &[&str] = &["Scope", "Design", "Acceptance Criteria", "Question", "Impact"];
+    for heading in SECTION_HEADINGS {
+        if section_input(input, heading).is_some() && !shape.allowed.contains(heading) {
+            return Err(WriteError::new(format!(
+                "{} does not apply to type {}",
+                section_flag(heading),
+                shape.name
+            )));
+        }
+    }
+    for heading in shape.required_at_create {
+        let given = section_input(input, heading).is_some_and(|body| !body.trim().is_empty());
+        if !given {
+            return Err(WriteError::new(format!(
+                "{} ticket requires {}",
+                shape.name,
+                section_flag(heading)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn section_input<'a>(input: &'a CreateTicket, heading: &str) -> Option<&'a str> {
+    match heading {
+        "Scope" => input.scope.as_deref(),
+        "Design" => input.design.as_deref(),
+        "Acceptance Criteria" => input.acceptance.as_deref(),
+        "Question" => input.question.as_deref(),
+        "Impact" => input.impact.as_deref(),
+        _ => None,
+    }
+}
+
+fn section_flag(heading: &str) -> String {
+    match heading {
+        "Acceptance Criteria" => "--acceptance".to_string(),
+        _ => format!("--{}", heading.to_ascii_lowercase().replace(' ', "-")),
+    }
+}
+#+end_src
+
 *** Status
+
+Every path to =closed= runs the close gate: the ticket type's required-at-close
+sections must hold non-whitespace content. =close= can fill the first required
+section from =--reason= before the gate runs; =set_status= (and therefore
+=tko status <id> closed=) runs the same gate with no reason. Other statuses are
+ungated.
 
 #+begin_example
 set_status(store, id, status):
   require status in the canonical status set
+  when status is closed, require the type's required-at-close sections non-empty
   resolve partial id to a ticket stem
   replace TKO_STATUS in the target property drawer
   report the updated status
+
+close(store, id, reason):
+  resolve partial id to a ticket stem
+  when reason is given, write it into the type's first required-at-close section
+    (refuse reason for types with no required close section)
+  set status to closed through the gated set_status
 #+end_example
 
 #+begin_src rust :tangle src/write.rs
@@ -1784,10 +1991,172 @@ set_status(store, id, status):
 pub fn set_status(store: &TicketStore, id: &str, status: &str) -> Result<String> {
     validate_status(status)?;
     let resolved = resolved_id(store, id)?;
+    if status == "closed" {
+        check_close_requirements(store, &resolved)?;
+    }
     store
         .set_property(&resolved, "TKO_STATUS", status)
         .map_err(|error| WriteError::new(error.to_string()))?;
     Ok(format!("Updated {resolved} -> {status}\n"))
+}
+
+pub fn close(store: &TicketStore, id: &str, reason: Option<&str>) -> Result<String> {
+    let resolved = resolved_id(store, id)?;
+    if let Some(reason) = reason {
+        write_close_reason(store, &resolved, reason)?;
+    }
+    set_status(store, &resolved, "closed")
+}
+#+end_src
+
+*** Close gate helpers
+
+#+begin_example
+check_close_requirements(store, resolved):
+  load the ticket and its type shape
+  fail on the first required-at-close section without non-whitespace content
+
+write_close_reason(store, resolved, reason):
+  refuse when the type has no required-at-close section
+  expand escaped newlines in the reason
+  write the reason into the first required-at-close section on disk
+
+section_has_content(body, heading):
+  scan the level-2 section under the case-insensitive heading
+  content is any non-whitespace line before the next heading of level <= 2
+
+write_into_section(document, heading, paragraph):
+  append the section heading at the end when absent, like append_note
+  fill an empty section with the paragraph
+  append the paragraph after existing section content, never clobbering it
+
+org_heading(line):
+  parse an Org heading line into level and title
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
+
+fn check_close_requirements(store: &TicketStore, resolved: &str) -> Result<()> {
+    let ticket = store
+        .load(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
+        return Ok(());
+    };
+    for heading in shape.required_at_close {
+        if !section_has_content(&ticket.body, heading) {
+            return Err(WriteError::new(format!(
+                "{} ticket requires non-empty {} before close (or pass --reason)",
+                shape.name, heading
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Result<()> {
+    let ticket = store
+        .load(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let heading = type_shape(&ticket.properties.ticket_type)
+        .and_then(|shape| shape.required_at_close.first())
+        .ok_or_else(|| {
+            WriteError::new(format!(
+                "--reason does not apply to type {}",
+                ticket.properties.ticket_type
+            ))
+        })?;
+    let reason = expand_escaped_newlines(reason);
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(WriteError::new("close reason is empty"));
+    }
+    let path = store
+        .resolve_id(resolved)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let document = fs::read_to_string(&path).map_err(|error| WriteError::new(error.to_string()))?;
+    let updated = write_into_section(&document, heading, reason);
+    fs::write(path, updated).map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(())
+}
+
+fn section_has_content(body: &str, heading: &str) -> bool {
+    let mut in_section = false;
+    for line in body.lines() {
+        if let Some((level, title)) = org_heading(line) {
+            if level <= 2 {
+                if in_section {
+                    return false;
+                }
+                in_section = level == 2 && title.eq_ignore_ascii_case(heading);
+                continue;
+            }
+        }
+        if in_section && !line.trim().is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
+    let lines = document.split_inclusive('\n').collect::<Vec<_>>();
+    let Some(heading_index) = lines.iter().position(|line| {
+        org_heading(line).is_some_and(|(level, title)| {
+            level == 2 && title.eq_ignore_ascii_case(heading)
+        })
+    }) else {
+        let mut updated = document.to_string();
+        if !updated.ends_with('\n') && !updated.is_empty() {
+            updated.push('\n');
+        }
+        if !updated.is_empty() {
+            updated.push('\n');
+        }
+        updated.push_str(&format!("** {heading}\n\n{paragraph}\n"));
+        return updated;
+    };
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(heading_index + 1)
+        .find_map(|(index, line)| match org_heading(line) {
+            Some((level, _)) if level <= 2 => Some(index),
+            _ => None,
+        })
+        .unwrap_or(lines.len());
+    let existing = lines[heading_index + 1..end].concat();
+    let existing = existing.trim();
+    let content = if existing.is_empty() {
+        paragraph.to_string()
+    } else {
+        format!("{existing}\n\n{paragraph}")
+    };
+    let mut updated = lines[..=heading_index].concat();
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push('\n');
+    updated.push_str(&content);
+    updated.push('\n');
+    if end < lines.len() {
+        updated.push('\n');
+        updated.push_str(&lines[end..].concat());
+    }
+    updated
+}
+
+fn org_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
 }
 #+end_src
 
@@ -2161,6 +2530,9 @@ push_section:
   expand escaped newlines
   write a second-level Org section
 
+push_empty_section:
+  write a second-level Org heading with no body
+
 resolved_id:
   let storage resolve partial ids
   return the resolved filename stem
@@ -2185,6 +2557,10 @@ fn push_section(text: &mut String, heading: &str, body: Option<&str>) {
         return;
     }
     text.push_str(&format!("\n** {heading}\n\n{body}\n"));
+}
+
+fn push_empty_section(text: &mut String, heading: &str) {
+    text.push_str(&format!("\n** {heading}\n"));
 }
 
 fn expand_escaped_newlines(value: &str) -> String {
@@ -2256,7 +2632,7 @@ fn validate_status(status: &str) -> Result<()> {
 }
 
 fn validate_type(ticket_type: &str) -> Result<()> {
-    if matches!(ticket_type, "bug" | "feature" | "task" | "epic" | "chore") {
+    if valid_types().contains(&ticket_type) {
         Ok(())
     } else {
         Err(WriteError::new(format!("invalid type: {ticket_type}")))
@@ -2893,8 +3269,8 @@ enum Command {
     Start(IdArgs),
     /// Set status to blocked.
     Block(IdArgs),
-    /// Set status to closed.
-    Close(IdArgs),
+    /// Set status to closed; typed tickets may need --reason.
+    Close(CloseArgs),
     /// Set status to open.
     Reopen(IdArgs),
     /// Update ticket status.
@@ -2936,6 +3312,7 @@ enum Command {
 
 #+begin_example
 accept explicit title and optional body sections
+accept type-scoped section flags (question, impact)
 accept metadata flags without ambient defaults
 #+end_example
 
@@ -2952,6 +3329,10 @@ struct CreateArgs {
     design: Option<String>,
     #[arg(long)]
     acceptance: Option<String>,
+    #[arg(long)]
+    question: Option<String>,
+    #[arg(long)]
+    impact: Option<String>,
     #[arg(short = 't', long = "type")]
     ticket_type: Option<String>,
     #[arg(short = 'p', long)]
@@ -2970,7 +3351,8 @@ struct CreateArgs {
 *** Shared command arguments
 
 #+begin_example
-model id, status, relation, tag, filter, show, and add-note arguments
+model id, close, status, relation, tag, filter, show, and add-note arguments
+give close an optional --reason for the required close section
 make add-note title explicit
 #+end_example
 
@@ -2979,6 +3361,13 @@ make add-note title explicit
 #[derive(Debug, Args)]
 struct IdArgs {
     id: String,
+}
+
+#[derive(Debug, Args)]
+struct CloseArgs {
+    id: String,
+    #[arg(long, help = "Fill the type's required close section")]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -3170,10 +3559,10 @@ where
             &args.id,
             "blocked",
         )),
-        Some(Command::Close(args)) => print_write(crate::write::set_status(
+        Some(Command::Close(args)) => print_write(crate::write::close(
             &write_store(false)?,
             &args.id,
-            "closed",
+            args.reason.as_deref(),
         )),
         Some(Command::Reopen(args)) => print_write(crate::write::set_status(
             &write_store(false)?,
@@ -3294,6 +3683,8 @@ fn create_ticket(args: CreateArgs) -> CreateTicket {
         scope: args.scope,
         design: args.design,
         acceptance: args.acceptance,
+        question: args.question,
+        impact: args.impact,
         ticket_type: args.ticket_type.unwrap_or_else(|| "task".to_string()),
         priority: args.priority.unwrap_or(2),
         assignee: args.assignee,
@@ -3520,6 +3911,31 @@ fn help_documents_note_and_lint_surfaces() {
 }
 #+end_src
 
+*** Help documents typed create and close surfaces
+
+#+begin_example
+create help exposes --question and --impact
+close help exposes --reason
+#+end_example
+
+#+begin_src rust :tangle tests/cli.rs
+
+#[test]
+fn help_documents_typed_create_and_close_flags() {
+    let create = run(&["create", "--help"]);
+    assert!(create.status.success());
+    let create_help = String::from_utf8_lossy(&create.stdout);
+    assert!(create_help.contains("--question"));
+    assert!(create_help.contains("--impact"));
+
+    let close = run(&["close", "--help"]);
+    assert!(close.status.success());
+    let close_help = String::from_utf8_lossy(&close.stdout);
+    assert!(close_help.contains("--reason"));
+    assert!(close_help.contains("required close section"));
+}
+#+end_src
+
 ** Storage Tests
 :PROPERTIES:
 :CUSTOM_ID: storage-tests
@@ -3539,7 +3955,7 @@ use std::path::Path;
 use tempfile::tempdir;
 use tko::storage::{
     StorageError, TicketStore, discover_tickets_dir, format_list_value, load_ticket,
-    parse_list_value,
+    parse_list_value, type_shape, valid_types,
 };
 
 fn write(path: &Path, text: &str) {
@@ -3751,6 +4167,39 @@ fn updates_existing_properties_and_inserts_missing_drawer() {
     assert!(existing_text.contains(":TKO_STATUS: closed"));
     let missing_text = fs::read_to_string(missing).expect("read missing");
     assert!(missing_text.starts_with(":PROPERTIES:\n:TKO_STATUS: open\n:END:\n\n* Missing drawer"));
+}
+#+end_src
+
+*** Type shape table
+
+#+begin_example
+valid_types lists every shape name
+type_shape returns per-type requirements and rejects unknown types
+#+end_example
+
+#+begin_src rust :tangle tests/storage.rs
+
+#[test]
+fn type_shape_table_names_requirements_per_type() {
+    assert_eq!(
+        valid_types(),
+        [
+            "bug", "feature", "task", "epic", "chore", "decision", "research", "incident"
+        ]
+    );
+    assert!(type_shape("banana").is_none());
+
+    let decision = type_shape("decision").expect("decision shape");
+    assert_eq!(decision.scaffold, ["Question", "Resolution"]);
+    assert_eq!(decision.required_at_create, ["Question"]);
+    assert_eq!(decision.required_at_close, ["Resolution"]);
+    assert!(decision.allowed.contains(&"Options"));
+    assert!(!decision.allowed.contains(&"Design"));
+
+    let task = type_shape("task").expect("task shape");
+    assert!(task.scaffold.is_empty());
+    assert!(task.required_at_close.is_empty());
+    assert!(task.allowed.contains(&"Design"));
 }
 #+end_src
 
@@ -4154,6 +4603,110 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
 }
 #+end_src
 
+*** Typed create scaffolds
+
+#+begin_example
+decision/research/incident scaffold required content plus an empty close section
+epic appends empty Not yet specified and Decisions headings
+task scaffold stays byte-identical to the legacy shape
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
+
+#[test]
+fn create_scaffolds_typed_sections() {
+    let fixture = Fixture::new();
+
+    let id = fixture.stdout(&[
+        "create",
+        "Pick a store",
+        "--type",
+        "decision",
+        "--question",
+        "Postgres or SQLite?",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: decision"));
+    assert!(text.ends_with("* Pick a store\n\n** Question\n\nPostgres or SQLite?\n\n** Resolution\n"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "Survey runtimes",
+        "--type",
+        "research",
+        "--question",
+        "Which runtimes fit?",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: research"));
+    assert!(text.ends_with("* Survey runtimes\n\n** Question\n\nWhich runtimes fit?\n\n** Findings\n"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "API outage",
+        "--type",
+        "incident",
+        "--impact",
+        "Writes failed for 20 minutes",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: incident"));
+    assert!(text.ends_with("* API outage\n\n** Impact\n\nWrites failed for 20 minutes\n\n** Resolution\n"));
+
+    let id = fixture.stdout(&["create", "Big effort", "--type", "epic"]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("* Big effort\n\n** Not yet specified\n\n** Decisions\n"));
+
+    let id = fixture.stdout(&["create", "Plain task", "--description", "Body"]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("* Plain task\n\n** Description\n\nBody\n"));
+}
+#+end_src
+
+*** Typed create refusals
+
+#+begin_example
+missing required create content refuses with the flag name
+section flags foreign to the type refuse
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
+
+#[test]
+fn create_refuses_missing_required_and_foreign_sections() {
+    let fixture = Fixture::new();
+
+    let output = fixture.run(&["create", "No question", "--type", "decision"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires --question"));
+
+    let output = fixture.run(&["create", "No impact", "--type", "incident"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("incident ticket requires --impact"));
+
+    let output = fixture.run(&[
+        "create",
+        "Foreign flag",
+        "--type",
+        "decision",
+        "--question",
+        "Q?",
+        "--design",
+        "sketch",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--design does not apply to type decision"));
+
+    let output = fixture.run(&["create", "Foreign flag", "--question", "Q?"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--question does not apply to type task"));
+}
+#+end_src
+
 *** Init command
 
 #+begin_example
@@ -4210,6 +4763,92 @@ fn status_aliases_update_tko_status() {
         "Updated sys-a -> open\n"
     );
     assert!(fixture.read("sys-a").contains(":TKO_STATUS: open"));
+}
+#+end_src
+
+*** Close gate
+
+#+begin_example
+closing a decision with empty Resolution refuses, via close and via status closed
+--reason fills the empty Resolution and closes
+--reason appends to pre-filled Resolution without clobbering
+pre-filled Resolution closes without --reason
+--reason on a task refuses; plain task close stays unchanged
+#+end_example
+
+#+begin_src rust :tangle tests/write.rs
+
+#[test]
+fn close_gate_requires_resolution_content_for_decisions() {
+    let fixture = Fixture::new();
+    let id = fixture.stdout(&[
+        "create",
+        "Pick a store",
+        "--type",
+        "decision",
+        "--question",
+        "Postgres or SQLite?",
+    ]);
+    let id = id.trim().to_string();
+
+    let output = fixture.run(&["close", &id]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+
+    let output = fixture.run(&["status", &id, "closed"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+    assert!(fixture.read(&id).contains(":TKO_STATUS: open"));
+
+    assert_eq!(
+        fixture.stdout(&["close", &id, "--reason", "Postgres"]),
+        format!("Updated {id} -> closed\n")
+    );
+    let text = fixture.read(&id);
+    assert!(text.contains(":TKO_STATUS: closed"));
+    assert!(text.ends_with("** Resolution\n\nPostgres\n"));
+}
+
+#[test]
+fn close_reason_appends_to_existing_resolution() {
+    let fixture = Fixture::new();
+    write_ticket(
+        &fixture.tickets_dir,
+        "sys-dec",
+        ":PROPERTIES:\n:TKO_ID: sys-dec\n:TKO_STATUS: open\n:TKO_TYPE: decision\n:END:\n\n* Decided\n\n** Question\n\nQ?\n\n** Resolution\n\nFirst call\n\n** Notes\n",
+    );
+
+    assert_eq!(
+        fixture.stdout(&["close", "sys-dec", "--reason", "Second call"]),
+        "Updated sys-dec -> closed\n"
+    );
+    let text = fixture.read("sys-dec");
+    assert!(text.contains("** Resolution\n\nFirst call\n\nSecond call\n\n** Notes\n"));
+}
+
+#[test]
+fn close_accepts_prefilled_resolution_and_tasks_stay_ungated() {
+    let fixture = Fixture::new();
+    write_ticket(
+        &fixture.tickets_dir,
+        "sys-dec",
+        ":PROPERTIES:\n:TKO_ID: sys-dec\n:TKO_STATUS: open\n:TKO_TYPE: decision\n:END:\n\n* Decided\n\n** Question\n\nQ?\n\n** Resolution\n\nAlready settled\n",
+    );
+
+    assert_eq!(
+        fixture.stdout(&["close", "sys-dec"]),
+        "Updated sys-dec -> closed\n"
+    );
+
+    assert_eq!(fixture.stdout(&["close", "sys-a"]), "Updated sys-a -> closed\n");
+
+    let output = fixture.run(&["close", "sys-b", "--reason", "done"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--reason does not apply to type task"));
+    assert!(fixture.read("sys-b").contains(":TKO_STATUS: open"));
 }
 #+end_src
 

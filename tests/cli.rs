@@ -61,3 +61,18 @@ fn help_documents_note_and_lint_surfaces() {
     assert!(lint_help.contains("L003"));
     assert!(lint_help.contains("note-title"));
 }
+
+#[test]
+fn help_documents_typed_create_and_close_flags() {
+    let create = run(&["create", "--help"]);
+    assert!(create.status.success());
+    let create_help = String::from_utf8_lossy(&create.stdout);
+    assert!(create_help.contains("--question"));
+    assert!(create_help.contains("--impact"));
+
+    let close = run(&["close", "--help"]);
+    assert!(close.status.success());
+    let close_help = String::from_utf8_lossy(&close.stdout);
+    assert!(close_help.contains("--reason"));
+    assert!(close_help.contains("required close section"));
+}

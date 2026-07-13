@@ -112,6 +112,89 @@ fn create_writes_tko_properties_sections_and_parent_resolution() {
 }
 
 #[test]
+fn create_scaffolds_typed_sections() {
+    let fixture = Fixture::new();
+
+    let id = fixture.stdout(&[
+        "create",
+        "Pick a store",
+        "--type",
+        "decision",
+        "--question",
+        "Postgres or SQLite?",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: decision"));
+    assert!(text.ends_with("* Pick a store\n\n** Question\n\nPostgres or SQLite?\n\n** Resolution\n"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "Survey runtimes",
+        "--type",
+        "research",
+        "--question",
+        "Which runtimes fit?",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: research"));
+    assert!(text.ends_with("* Survey runtimes\n\n** Question\n\nWhich runtimes fit?\n\n** Findings\n"));
+
+    let id = fixture.stdout(&[
+        "create",
+        "API outage",
+        "--type",
+        "incident",
+        "--impact",
+        "Writes failed for 20 minutes",
+    ]);
+    let text = fixture.read(id.trim());
+    assert!(text.contains(":TKO_TYPE: incident"));
+    assert!(text.ends_with("* API outage\n\n** Impact\n\nWrites failed for 20 minutes\n\n** Resolution\n"));
+
+    let id = fixture.stdout(&["create", "Big effort", "--type", "epic"]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("* Big effort\n\n** Not yet specified\n\n** Decisions\n"));
+
+    let id = fixture.stdout(&["create", "Plain task", "--description", "Body"]);
+    let text = fixture.read(id.trim());
+    assert!(text.ends_with("* Plain task\n\n** Description\n\nBody\n"));
+}
+
+#[test]
+fn create_refuses_missing_required_and_foreign_sections() {
+    let fixture = Fixture::new();
+
+    let output = fixture.run(&["create", "No question", "--type", "decision"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires --question"));
+
+    let output = fixture.run(&["create", "No impact", "--type", "incident"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("incident ticket requires --impact"));
+
+    let output = fixture.run(&[
+        "create",
+        "Foreign flag",
+        "--type",
+        "decision",
+        "--question",
+        "Q?",
+        "--design",
+        "sketch",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--design does not apply to type decision"));
+
+    let output = fixture.run(&["create", "Foreign flag", "--question", "Q?"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--question does not apply to type task"));
+}
+
+#[test]
 fn init_creates_ticket_storage_explicitly() {
     let temp = tempfile::tempdir().expect("tempdir");
     let output = Command::new(tko_bin())
@@ -150,6 +233,79 @@ fn status_aliases_update_tko_status() {
         "Updated sys-a -> open\n"
     );
     assert!(fixture.read("sys-a").contains(":TKO_STATUS: open"));
+}
+
+#[test]
+fn close_gate_requires_resolution_content_for_decisions() {
+    let fixture = Fixture::new();
+    let id = fixture.stdout(&[
+        "create",
+        "Pick a store",
+        "--type",
+        "decision",
+        "--question",
+        "Postgres or SQLite?",
+    ]);
+    let id = id.trim().to_string();
+
+    let output = fixture.run(&["close", &id]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+
+    let output = fixture.run(&["status", &id, "closed"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+    assert!(fixture.read(&id).contains(":TKO_STATUS: open"));
+
+    assert_eq!(
+        fixture.stdout(&["close", &id, "--reason", "Postgres"]),
+        format!("Updated {id} -> closed\n")
+    );
+    let text = fixture.read(&id);
+    assert!(text.contains(":TKO_STATUS: closed"));
+    assert!(text.ends_with("** Resolution\n\nPostgres\n"));
+}
+
+#[test]
+fn close_reason_appends_to_existing_resolution() {
+    let fixture = Fixture::new();
+    write_ticket(
+        &fixture.tickets_dir,
+        "sys-dec",
+        ":PROPERTIES:\n:TKO_ID: sys-dec\n:TKO_STATUS: open\n:TKO_TYPE: decision\n:END:\n\n* Decided\n\n** Question\n\nQ?\n\n** Resolution\n\nFirst call\n\n** Notes\n",
+    );
+
+    assert_eq!(
+        fixture.stdout(&["close", "sys-dec", "--reason", "Second call"]),
+        "Updated sys-dec -> closed\n"
+    );
+    let text = fixture.read("sys-dec");
+    assert!(text.contains("** Resolution\n\nFirst call\n\nSecond call\n\n** Notes\n"));
+}
+
+#[test]
+fn close_accepts_prefilled_resolution_and_tasks_stay_ungated() {
+    let fixture = Fixture::new();
+    write_ticket(
+        &fixture.tickets_dir,
+        "sys-dec",
+        ":PROPERTIES:\n:TKO_ID: sys-dec\n:TKO_STATUS: open\n:TKO_TYPE: decision\n:END:\n\n* Decided\n\n** Question\n\nQ?\n\n** Resolution\n\nAlready settled\n",
+    );
+
+    assert_eq!(
+        fixture.stdout(&["close", "sys-dec"]),
+        "Updated sys-dec -> closed\n"
+    );
+
+    assert_eq!(fixture.stdout(&["close", "sys-a"]), "Updated sys-a -> closed\n");
+
+    let output = fixture.run(&["close", "sys-b", "--reason", "done"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--reason does not apply to type task"));
+    assert!(fixture.read("sys-b").contains(":TKO_STATUS: open"));
 }
 
 #[test]

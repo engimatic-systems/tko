@@ -33,8 +33,8 @@ enum Command {
     Start(IdArgs),
     /// Set status to blocked.
     Block(IdArgs),
-    /// Set status to closed.
-    Close(IdArgs),
+    /// Set status to closed; typed tickets may need --reason.
+    Close(CloseArgs),
     /// Set status to open.
     Reopen(IdArgs),
     /// Update ticket status.
@@ -82,6 +82,10 @@ struct CreateArgs {
     design: Option<String>,
     #[arg(long)]
     acceptance: Option<String>,
+    #[arg(long)]
+    question: Option<String>,
+    #[arg(long)]
+    impact: Option<String>,
     #[arg(short = 't', long = "type")]
     ticket_type: Option<String>,
     #[arg(short = 'p', long)]
@@ -99,6 +103,13 @@ struct CreateArgs {
 #[derive(Debug, Args)]
 struct IdArgs {
     id: String,
+}
+
+#[derive(Debug, Args)]
+struct CloseArgs {
+    id: String,
+    #[arg(long, help = "Fill the type's required close section")]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -268,10 +279,10 @@ where
             &args.id,
             "blocked",
         )),
-        Some(Command::Close(args)) => print_write(crate::write::set_status(
+        Some(Command::Close(args)) => print_write(crate::write::close(
             &write_store(false)?,
             &args.id,
-            "closed",
+            args.reason.as_deref(),
         )),
         Some(Command::Reopen(args)) => print_write(crate::write::set_status(
             &write_store(false)?,
@@ -380,6 +391,8 @@ fn create_ticket(args: CreateArgs) -> CreateTicket {
         scope: args.scope,
         design: args.design,
         acceptance: args.acceptance,
+        question: args.question,
+        impact: args.impact,
         ticket_type: args.ticket_type.unwrap_or_else(|| "task".to_string()),
         priority: args.priority.unwrap_or(2),
         assignee: args.assignee,

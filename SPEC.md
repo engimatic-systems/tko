@@ -172,6 +172,20 @@ Valid types:
 - `task`
 - `epic`
 - `chore`
+- `decision`
+- `research`
+- `incident`
+
+Each type has a shape: sections scaffolded at create, content required at
+create, and content required before close.
+
+| type                       | required at create | scaffolded at create                    | required non-empty at close |
+|----------------------------|--------------------|-----------------------------------------|-----------------------------|
+| `bug` `feature` `task` `chore` | —              | sections only when flags are given      | —                           |
+| `epic`                     | —                  | + empty `Not yet specified`, `Decisions` | —                          |
+| `decision`                 | `--question`       | `Question` (content), empty `Resolution` | `Resolution`               |
+| `research`                 | `--question`       | `Question` (content), empty `Findings`  | `Findings`                  |
+| `incident`                 | `--impact`         | `Impact` (content), empty `Resolution`  | `Resolution`                |
 
 Valid priorities:
 
@@ -205,13 +219,20 @@ property drawer has been removed.
 `show --full` prints the ticket body after the first property drawer has been
 removed.
 
-Semantic headings recognized by lint:
+Semantic heading vocabulary:
 
-- `Description`
-- `Scope`
-- `Design`
-- `Acceptance Criteria`
-- `Notes`
+- universal: `Description`, `Notes`
+- `task`/`bug`/`feature`/`chore`: + `Scope`, `Design`, `Acceptance Criteria`
+- `epic`: + `Scope`, `Design`, `Acceptance Criteria`, `Not yet specified`,
+  `Decisions`
+- `decision`: + `Question`, `Options`, `Resolution`
+- `research`: + `Question`, `Findings`
+- `incident`: + `Impact`, `Findings`, `Resolution`
+
+The type scoping is enforced at create (foreign section flags are refused) and
+at close (required sections must be non-empty). Lint currently recognizes only
+`Description`, `Scope`, `Design`, `Acceptance Criteria`, and `Notes`; lint
+enforcement of the type-scoped vocabulary is planned.
 
 Stable rule: semantic headings must occur at level 2 (`**`) and must not be
 duplicated.
@@ -247,7 +268,9 @@ Options:
 - `--scope <text>`
 - `--design <text>`
 - `--acceptance <text>`
-- `-t`, `--type <bug|feature|task|epic|chore>`
+- `--question <text>`
+- `--impact <text>`
+- `-t`, `--type <bug|feature|task|epic|chore|decision|research|incident>`
 - `-p`, `--priority <0|1|2|3|4>`
 - `-a`, `--assignee <name>`
 - `--external-ref <ref>`
@@ -267,6 +290,23 @@ Behavior:
 - Converts escaped `\n` sequences in section options into real newlines.
 - Writes only non-empty optional section bodies.
 - Writes `TKO_TAGS` only when at least one tag is provided.
+
+Typed behavior:
+
+- Section flags foreign to the type are refused: `--design` on a `decision`
+  fails with `--design does not apply to type decision`. `--description` is
+  accepted for every type; `--scope`, `--design`, and `--acceptance` apply to
+  `task`/`bug`/`feature`/`chore`/`epic`; `--question` applies to `decision` and
+  `research`; `--impact` applies to `incident`.
+- Types with a required create section refuse creation when the flag is missing
+  or blank: `decision ticket requires --question`, `research ticket requires
+  --question`, `incident ticket requires --impact`.
+- Type scaffold sections are emitted after any legacy sections: required
+  sections carry the flag content; the remaining scaffold sections are emitted
+  as empty level-2 headings (`decision`: `Resolution`; `research`: `Findings`;
+  `incident`: `Resolution`; `epic`: `Not yet specified` and `Decisions`).
+- `task`/`bug`/`feature`/`chore` output is unchanged: no scaffold beyond the
+  requested sections.
 
 Compatibility:
 
@@ -288,18 +328,50 @@ Sets `TKO_STATUS` and prints:
 Updated <id> -> <status>
 ```
 
-### `start`, `block`, `close`, `reopen`
+`status <id> closed` runs the same close gate as `close` (with no reason): if
+the ticket type requires close sections and any is empty, the command fails and
+the status is not changed. Other statuses are ungated.
+
+### `start`, `block`, `reopen`
 
 Usage:
 
 ```text
 tko start <id>
 tko block <id>
-tko close <id>
 tko reopen <id>
 ```
 
-Aliases for `status <id> in_progress`, `blocked`, `closed`, and `open`.
+Aliases for `status <id> in_progress`, `blocked`, and `open`.
+
+### `close`
+
+Usage:
+
+```text
+tko close <id> [--reason <text>]
+```
+
+Sets `TKO_STATUS` to `closed` and prints `Updated <id> -> closed`, subject to
+the type close gate:
+
+- If the ticket type requires close sections (`decision`/`incident`:
+  `Resolution`; `research`: `Findings`), each must contain non-whitespace
+  content below its level-2 heading before the next heading of level 2 or
+  above. An empty required section fails with:
+
+  ```text
+  decision ticket requires non-empty Resolution before close (or pass --reason)
+  ```
+
+- `--reason <text>` writes the text into the first required close section
+  before the gate runs: it fills an empty section, appends as a new paragraph
+  when the section already has content, and creates the heading at the end of
+  the file when absent. Escaped `\n` sequences are converted to real newlines.
+- `--reason` on a type with no required close section fails with
+  `--reason does not apply to type <type>`.
+- Types without required close sections (`task`/`bug`/`feature`/`chore`/`epic`)
+  close exactly as before.
 
 ### `dep` and `undep`
 
