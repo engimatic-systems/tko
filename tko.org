@@ -2000,22 +2000,22 @@ fn section_flag(heading: &str) -> String {
 *** Status
 
 Every path to =closed= runs the close gate: the ticket type's required-at-close
-sections must hold non-whitespace content. =close= can fill the first required
-section from =--reason= before the gate runs; =set_status= (and therefore
+section (at most one per type) must hold non-whitespace content. =close= can
+fill it from =--reason= before the gate runs; =set_status= (and therefore
 =tko status <id> closed=) runs the same gate with no reason. Other statuses are
 ungated.
 
 #+begin_example
 set_status(store, id, status):
   require status in the canonical status set
-  when status is closed, require the type's required-at-close sections non-empty
+  when status is closed, require the type's required-at-close section non-empty
   resolve partial id to a ticket stem
   replace TKO_STATUS in the target property drawer
   report the updated status
 
 close(store, id, reason):
   resolve partial id to a ticket stem
-  when reason is given, write it into the type's first required-at-close section
+  when reason is given, write it into the type's required-at-close section
     (refuse reason for types with no required close section)
   set status to closed through the gated set_status
 #+end_example
@@ -2048,12 +2048,12 @@ pub fn close(store: &TicketStore, id: &str, reason: Option<&str>) -> Result<Stri
 #+begin_example
 check_close_requirements(store, resolved):
   load the ticket and its type shape
-  fail on the first required-at-close section without non-whitespace content
+  fail when the required-at-close section lacks non-whitespace content
 
 write_close_reason(store, resolved, reason):
   refuse when the type has no required-at-close section
   expand escaped newlines in the reason
-  write the reason into the first required-at-close section on disk
+  write the reason into the required-at-close section on disk
 
 section_has_content(body, heading):
   scan the level-2 section under the case-insensitive heading
