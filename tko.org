@@ -3007,7 +3007,7 @@ no shape row skips these rules; the structural rules above always run.
 
 - =L005= (failure): a type-required section is missing or empty.
   =required_at_create= sections are checked on every ticket;
-  =required_at_close= sections only when =TKO_STATUS= is =closed=, so an open
+  the =required_at_close= section only when =TKO_STATUS= is =closed=, so an open
   decision with an empty Resolution is clean.
 - =L006= (warning): a known semantic heading present on a type whose allowed
   list excludes it.
@@ -3035,7 +3035,7 @@ fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut required = shape.required_at_create.to_vec();
     if drawer_property(text, "TKO_STATUS").as_deref() == Some("closed") {
-        required.extend_from_slice(shape.required_at_close);
+        required.extend(shape.required_at_close);
     }
     for heading in required {
         match locate_section(text, heading) {
