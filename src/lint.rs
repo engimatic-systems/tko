@@ -1,6 +1,8 @@
 // Generated from tko.org. Do not edit by hand.
 
-use crate::storage::TicketStore;
+use crate::storage::{
+    TicketStore, drawer_property, locate_section, org_heading, semantic_headings, type_shape,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -96,6 +98,7 @@ pub fn lint_path(path: &Path) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     findings.extend(lint_semantic_headings(path, &text));
     findings.extend(lint_note_titles(path, &text));
+    findings.extend(lint_type_shape(path, &text));
     Ok(findings)
 }
 
@@ -108,13 +111,7 @@ pub fn has_failures(findings: &[Finding]) -> bool {
 fn lint_semantic_headings(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut seen: HashMap<&'static str, usize> = HashMap::new();
-    for (index, line) in text.lines().enumerate() {
-        let Some((level, title)) = org_heading(line) else {
-            continue;
-        };
-        let Some(canonical) = semantic_heading(title) else {
-            continue;
-        };
+    for (index, level, canonical) in semantic_heading_lines(text) {
         if level != 2 {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -177,33 +174,79 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
     findings
 }
 
-fn org_heading(line: &str) -> Option<(usize, &str)> {
-    let bytes = line.as_bytes();
-    let mut stars = 0usize;
-    while matches!(bytes.get(stars), Some(b'*')) {
-        stars += 1;
+fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
+    let ticket_type = drawer_property(text, "TKO_TYPE").unwrap_or_else(|| "task".to_string());
+    let Some(shape) = type_shape(&ticket_type) else {
+        return Vec::new();
+    };
+
+    let mut findings = Vec::new();
+    let mut required = shape.required_at_create.to_vec();
+    if drawer_property(text, "TKO_STATUS").as_deref() == Some("closed") {
+        required.extend(shape.required_at_close);
     }
-    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
-        return None;
+    for heading in required {
+        match locate_section(text, heading) {
+            Some((_, true)) => {}
+            Some((line, false)) => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: line + 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section is empty: {heading} (type {})", shape.name),
+            }),
+            None => findings.push(Finding {
+                path: path.to_path_buf(),
+                line: 1,
+                code: "L005",
+                severity: Severity::Failure,
+                message: format!("required section missing: {heading} (type {})", shape.name),
+            }),
+        }
     }
-    Some((stars, line[stars + 1..].trim_end()))
+
+    for (index, _, canonical) in semantic_heading_lines(text) {
+        if !shape.allowed.contains(&canonical) {
+            findings.push(Finding {
+                path: path.to_path_buf(),
+                line: index + 1,
+                code: "L006",
+                severity: Severity::Warning,
+                message: format!(
+                    "semantic heading does not apply to type {}: {canonical}",
+                    shape.name
+                ),
+            });
+        }
+    }
+    findings
+}
+
+fn semantic_heading_lines(text: &str) -> Vec<(usize, usize, &'static str)> {
+    let mut lines = Vec::new();
+    let mut in_notes = false;
+    for (index, line) in text.lines().enumerate() {
+        let Some((level, title)) = org_heading(line) else {
+            continue;
+        };
+        if level <= 2 {
+            in_notes = level == 2 && title.trim().eq_ignore_ascii_case("Notes");
+        } else if in_notes {
+            continue;
+        }
+        if let Some(canonical) = semantic_heading(title) {
+            lines.push((index, level, canonical));
+        }
+    }
+    lines
 }
 
 fn semantic_heading(title: &str) -> Option<&'static str> {
     let title = title.trim();
-    if title.eq_ignore_ascii_case("description") {
-        Some("Description")
-    } else if title.eq_ignore_ascii_case("scope") {
-        Some("Scope")
-    } else if title.eq_ignore_ascii_case("design") {
-        Some("Design")
-    } else if title.eq_ignore_ascii_case("acceptance criteria") {
-        Some("Acceptance Criteria")
-    } else if title.eq_ignore_ascii_case("notes") {
-        Some("Notes")
-    } else {
-        None
-    }
+    semantic_headings()
+        .iter()
+        .find(|heading| title.eq_ignore_ascii_case(heading))
+        .copied()
 }
 
 fn note_title_after_timestamp(note_title: &str) -> &str {

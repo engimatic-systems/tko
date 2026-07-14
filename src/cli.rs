@@ -65,7 +65,7 @@ enum Command {
     AddNote(AddNoteArgs),
     /// List tickets matching a predicate filter (summary; --output id|json).
     Query(QueryArgs),
-    /// Validate semantic headings and lint rules L001-L003, including L003 note-title length.
+    /// Validate lint rules L001-L003 and L005-L006 (L004 reserved): semantic headings, L003 note-title length, typed sections.
     Lint(LintArgs),
     /// List note headings as timestamp plus title.
     Notes(IdArgs),

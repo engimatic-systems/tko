@@ -264,12 +264,58 @@ static TYPE_SHAPES: &[TypeShape] = &[
 static TYPE_NAMES: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| TYPE_SHAPES.iter().map(|shape| shape.name).collect());
 
+static SEMANTIC_HEADINGS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut headings = Vec::new();
+    for shape in TYPE_SHAPES {
+        for heading in shape.allowed {
+            if !headings.contains(heading) {
+                headings.push(heading);
+            }
+        }
+    }
+    headings
+});
+
 pub fn type_shape(ticket_type: &str) -> Option<&'static TypeShape> {
     TYPE_SHAPES.iter().find(|shape| shape.name == ticket_type)
 }
 
 pub fn valid_types() -> &'static [&'static str] {
     &TYPE_NAMES
+}
+
+pub fn semantic_headings() -> &'static [&'static str] {
+    &SEMANTIC_HEADINGS
+}
+
+pub fn org_heading(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let bytes = trimmed.as_bytes();
+    let mut stars = 0usize;
+    while matches!(bytes.get(stars), Some(b'*')) {
+        stars += 1;
+    }
+    if stars == 0 || !matches!(bytes.get(stars), Some(b' ')) {
+        return None;
+    }
+    Some((stars, trimmed[stars + 1..].trim_end()))
+}
+
+pub fn locate_section(text: &str, heading: &str) -> Option<(usize, bool)> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let start = lines.iter().position(|line| {
+        org_heading(line)
+            .is_some_and(|(level, title)| level == 2 && title.eq_ignore_ascii_case(heading))
+    })?;
+    let has_content = lines[start + 1..]
+        .iter()
+        .take_while(|line| !matches!(org_heading(line), Some((level, _)) if level <= 2))
+        .any(|line| !line.trim().is_empty());
+    Some((start, has_content))
+}
+
+pub fn section_has_content(text: &str, heading: &str) -> bool {
+    locate_section(text, heading).is_some_and(|(_, has_content)| has_content)
 }
 
 pub fn discover_tickets_dir(
@@ -436,6 +482,17 @@ struct PropertyEntry {
     key: String,
     value: String,
     line_index: usize,
+}
+
+pub fn drawer_property(text: &str, key: &str) -> Option<String> {
+    let document = OrgDocument::parse(text);
+    document
+        .drawer?
+        .entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .map(|entry| entry.value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_property_drawer(lines: &[String]) -> Option<PropertyDrawer> {
