@@ -177,7 +177,8 @@ Valid types:
 - `incident`
 
 Each type has a shape: sections scaffolded at create, content required at
-create, and content required before close. Scaffolded sections are always
+create, and content required before close (at most one close-required
+section per type). Scaffolded sections are always
 emitted at create — filled from the matching flag when given, an empty level-2
 heading otherwise.
 
@@ -372,7 +373,7 @@ the type close gate:
   decision ticket requires non-empty Resolution before close (or pass --reason)
   ```
 
-- `--reason <text>` writes the text into the first required close section
+- `--reason <text>` writes the text into the type's required close section
   before the gate runs: it fills an empty section, appends as a new paragraph
   when the section already has content, and creates the heading at the end of
   the file when absent. Escaped `\n` sequences are converted to real newlines.
