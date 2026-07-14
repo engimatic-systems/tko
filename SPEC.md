@@ -868,8 +868,9 @@ remains in the active property drawer after migration. It is not implemented.
 
 - `required at create` sections (`Question` for `decision`/`research`,
   `Impact` for `incident`) are checked on every ticket regardless of status.
-- `required at close` sections (`Resolution` for `decision`/`incident`,
-  `Findings` for `research`) are checked only when `TKO_STATUS` is `closed`.
+- the `required at close` section (`Resolution` for `decision`/`incident`,
+  `Findings` for `research`; at most one per type) is checked only when
+  `TKO_STATUS` is `closed`.
   An open decision with an empty `Resolution` lints clean.
 - An empty section reports at the heading's line; a missing section reports at
   line 1. Section emptiness matches the close gate: content is any
