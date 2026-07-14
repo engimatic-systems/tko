@@ -164,7 +164,7 @@ fn type_shape_table_names_requirements_per_type() {
     let decision = type_shape("decision").expect("decision shape");
     assert_eq!(decision.scaffold, ["Question", "Resolution"]);
     assert_eq!(decision.required_at_create, ["Question"]);
-    assert_eq!(decision.required_at_close, ["Resolution"]);
+    assert_eq!(decision.required_at_close, Some("Resolution"));
     assert!(decision.allowed.contains(&"Options"));
     assert!(!decision.allowed.contains(&"Design"));
 
@@ -173,6 +173,6 @@ fn type_shape_table_names_requirements_per_type() {
         task.scaffold,
         ["Description", "Scope", "Design", "Acceptance Criteria"]
     );
-    assert!(task.required_at_close.is_empty());
+    assert!(task.required_at_close.is_none());
     assert!(task.allowed.contains(&"Design"));
 }

@@ -198,7 +198,7 @@ fn check_close_requirements(store: &TicketStore, resolved: &str) -> Result<()> {
     let Some(shape) = type_shape(&ticket.properties.ticket_type) else {
         return Ok(());
     };
-    for heading in shape.required_at_close {
+    if let Some(heading) = shape.required_at_close {
         if !section_has_content(&ticket.body, heading) {
             return Err(WriteError::new(format!(
                 "{} ticket requires non-empty {} before close (or pass --reason)",
@@ -214,7 +214,7 @@ fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Resu
         .load(resolved)
         .map_err(|error| WriteError::new(error.to_string()))?;
     let heading = type_shape(&ticket.properties.ticket_type)
-        .and_then(|shape| shape.required_at_close.first())
+        .and_then(|shape| shape.required_at_close)
         .ok_or_else(|| {
             WriteError::new(format!(
                 "--reason does not apply to type {}",
