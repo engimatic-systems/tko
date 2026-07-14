@@ -183,7 +183,7 @@ fn lint_type_shape(path: &Path, text: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut required = shape.required_at_create.to_vec();
     if drawer_property(text, "TKO_STATUS").as_deref() == Some("closed") {
-        required.extend_from_slice(shape.required_at_close);
+        required.extend(shape.required_at_close);
     }
     for heading in required {
         match locate_section(text, heading) {
