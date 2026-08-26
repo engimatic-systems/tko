@@ -52,20 +52,18 @@ fn lint_passes_clean_ticket() {
 }
 
 #[test]
-fn lint_warning_for_note_title_target_exits_successfully() {
+fn lint_accepts_note_title_at_hard_limit() {
     let fixture = Fixture::new();
-    let title = "x".repeat(51);
+    let title = "x".repeat(72);
     fixture.write(
-        "sys-warn",
-        &format!("* Warn\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"),
+        "sys-limit",
+        &format!("* Limit\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"),
     );
 
-    let output = fixture.run(&["lint", "sys-warn"]);
+    let output = fixture.run(&["lint", "sys-limit"]);
 
     assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("L003 warning"));
-    assert!(stdout.contains("51 > 50"));
+    assert!(output.stdout.is_empty());
 }
 
 #[test]

@@ -656,7 +656,6 @@ Behavior:
   ticket subtree.
 - Individual note entries are always `***` headings.
 - Note title enforcement applies before writing:
-  - title text after the timestamp should be at most 50 characters
   - title text after the timestamp must be at most 72 characters
   - title prose beyond the limit belongs in the note body
 
@@ -849,7 +848,7 @@ Current lint codes:
 
 - `L001 duplicate semantic heading: <heading>` (failure)
 - `L002 semantic heading must be level-2 (**): <heading>` (failure)
-- `L003 note title exceeds length target or hard limit` (warning/failure)
+- `L003 note title exceeds hard limit` (failure)
 - `L005 required section missing/empty: <heading> (type <type>)` (failure)
 - `L006 semantic heading does not apply to type <type>: <heading>` (warning)
 
@@ -857,9 +856,8 @@ Reserved lint codes:
 
 - `L004 legacy TK_* property key remains after migration`
 
-`L003` warns above 50 characters and fails above 72 characters for note title
-text after the timestamp. `add-note` enforces the same hard limit at write
-time.
+`L003` fails above 72 characters for note title text after the timestamp.
+`add-note` enforces the same hard limit at write time.
 
 `L004` is reserved: it will fail when a known legacy `TK_*` property key
 remains in the active property drawer after migration. It is not implemented.
