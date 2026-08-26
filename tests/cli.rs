@@ -59,7 +59,7 @@ fn help_documents_note_and_lint_surfaces() {
     assert!(lint.status.success());
     let lint_help = String::from_utf8_lossy(&lint.stdout);
     assert!(lint_help.contains("L003"));
-    assert!(lint_help.contains("note-title"));
+    assert!(lint_help.contains("note-title hard limit"));
 }
 
 #[test]

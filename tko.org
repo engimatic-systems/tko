@@ -2952,7 +2952,6 @@ lint_note_titles(path, text):
   find each level-2 Notes section
   track whether the current scan position is inside a Notes section
   ignore timestamp prefix when present
-  emit L003 warning when note title is over 50 characters
   emit L003 failure when note title is over 72 characters
 #+end_example
 
@@ -2979,14 +2978,6 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
                         code: "L003",
                         severity: Severity::Failure,
                         message: format!("note title exceeds hard limit: {length} > 72"),
-                    });
-                } else if length > 50 {
-                    findings.push(Finding {
-                        path: path.to_path_buf(),
-                        line: index + 1,
-                        code: "L003",
-                        severity: Severity::Warning,
-                        message: format!("note title exceeds target length: {length} > 50"),
                     });
                 }
             }
@@ -3144,12 +3135,11 @@ fn note_title_after_timestamp(note_title: &str) -> &str {
 Backfill guidance for existing tickets:
 
 1. Run =tko lint= after migrating ticket properties.
-2. For each =L003= warning or failure, keep the timestamped heading short and
-   move overflow prose into that note's body.
-3. Treat warning titles over 50 characters as cleanup candidates.
-4. Treat failure titles over 72 characters as required cleanup before relying on
+2. For each =L003= failure, keep the timestamped heading short and move overflow
+   prose into that note's body.
+3. Treat titles over 72 characters as required cleanup before relying on
    new =add-note= behavior.
-5. Timestamp-only notes are valid; do not invent titles solely to satisfy lint.
+4. Timestamp-only notes are valid; do not invent titles solely to satisfy lint.
 
 *** Note model
 
@@ -3473,7 +3463,7 @@ enum Command {
     AddNote(AddNoteArgs),
     /// List tickets matching a predicate filter (summary; --output id|json).
     Query(QueryArgs),
-    /// Validate lint rules L001-L003 and L005-L006 (L004 reserved): semantic headings, L003 note-title length, typed sections.
+    /// Validate lint rules L001-L003 and L005-L006 (L004 reserved): semantic headings, L003 note-title hard limit, typed sections.
     Lint(LintArgs),
     /// List note headings as timestamp plus title.
     Notes(IdArgs),
@@ -4062,7 +4052,7 @@ fn unknown_flags_are_usage_errors() {
 
 #+begin_example
 show help exposes --note
-lint help mentions note-title lint surface
+lint help mentions the note-title hard limit
 #+end_example
 
 #+begin_src rust :tangle tests/cli.rs
@@ -4079,7 +4069,7 @@ fn help_documents_note_and_lint_surfaces() {
     assert!(lint.status.success());
     let lint_help = String::from_utf8_lossy(&lint.stdout);
     assert!(lint_help.contains("L003"));
-    assert!(lint_help.contains("note-title"));
+    assert!(lint_help.contains("note-title hard limit"));
 }
 #+end_src
 
@@ -5364,32 +5354,30 @@ fn lint_passes_clean_ticket() {
 }
 #+end_src
 
-*** Lint warning behavior
+*** Lint note title boundary
 
 #+begin_example
-lint note title target length:
-  given a note title over 50 characters and no hard failures
+lint note title hard limit:
+  given a note title exactly 72 characters long
   exits successfully
-  prints an L003 warning
+  prints no findings
 #+end_example
 
 #+begin_src rust :tangle tests/lint.rs
 
 #[test]
-fn lint_warning_for_note_title_target_exits_successfully() {
+fn lint_accepts_note_title_at_hard_limit() {
     let fixture = Fixture::new();
-    let title = "x".repeat(51);
+    let title = "x".repeat(72);
     fixture.write(
-        "sys-warn",
-        &format!("* Warn\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"),
+        "sys-limit",
+        &format!("* Limit\n\n** Notes\n*** [2026-06-11 Thu 10:00Z] {title}\n"),
     );
 
-    let output = fixture.run(&["lint", "sys-warn"]);
+    let output = fixture.run(&["lint", "sys-limit"]);
 
     assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("L003 warning"));
-    assert!(stdout.contains("51 > 50"));
+    assert!(output.stdout.is_empty());
 }
 #+end_src
 

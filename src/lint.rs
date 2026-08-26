@@ -158,14 +158,6 @@ fn lint_note_titles(path: &Path, text: &str) -> Vec<Finding> {
                         severity: Severity::Failure,
                         message: format!("note title exceeds hard limit: {length} > 72"),
                     });
-                } else if length > 50 {
-                    findings.push(Finding {
-                        path: path.to_path_buf(),
-                        line: index + 1,
-                        code: "L003",
-                        severity: Severity::Warning,
-                        message: format!("note title exceeds target length: {length} > 50"),
-                    });
                 }
             }
             _ => {}
