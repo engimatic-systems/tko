@@ -5,11 +5,13 @@
 - Ticket: =sys-u0zh=
 - Base: =373f5b16f4ebdcd610a57dec224b53230386d51b=
 - Branch: =spike/git-native-transactions=
-- Spike commit: the single local branch-tip commit containing this report,
-  source, and tests. Its exact hash is returned in the worker packet and is
-  resolved with =git rev-parse spike/git-native-transactions=; a commit cannot
-  embed its own object ID in its contents.
-- Remote publication: none. The branch was not pushed and no PR was opened.
+- Audited spike commit: =345dee42dd83efd62e1fdb8f99a115350d6778a6=.
+  This is the implementation/source/test/report commit independently audited
+  under =sys-hjap=.
+- Review publication: after the prototype and audit completed, the operator
+  explicitly authorized pushing the disposable branch and opening
+  =engimatic-systems/tko#38=. The PR is a do-not-merge review surface; no
+  production decision, release, installation, or migration is authorized.
 
 The prototype ran only against disposable stores created under temporary
 directories. It did not run against the live sys ticket store and did not
