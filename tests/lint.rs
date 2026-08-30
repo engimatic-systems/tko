@@ -159,12 +159,18 @@ fn lint_l005_flags_missing_or_empty_create_sections() {
     let output = fixture.run(&["lint", "sys-missing"]);
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("sys-missing.org:1: L005 required section missing: Question (type decision)"));
+    assert!(
+        stdout
+            .contains("sys-missing.org:1: L005 required section missing: Question (type decision)")
+    );
 
     let output = fixture.run(&["lint", "sys-empty"]);
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("sys-empty.org:7: L005 required section is empty: Question (type decision)"));
+    assert!(
+        stdout
+            .contains("sys-empty.org:7: L005 required section is empty: Question (type decision)")
+    );
 }
 
 #[test]

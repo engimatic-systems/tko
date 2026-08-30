@@ -269,11 +269,7 @@ where
             &args.id,
             &args.status,
         )),
-        Some(Command::Start(args)) => print_write(crate::write::set_status(
-            &write_store(false)?,
-            &args.id,
-            "in_progress",
-        )),
+        Some(Command::Start(args)) => run_start(args),
         Some(Command::Block(args)) => print_write(crate::write::set_status(
             &write_store(false)?,
             &args.id,
@@ -299,11 +295,7 @@ where
             &args.id,
             &args.target_id,
         )),
-        Some(Command::Link(args)) => print_write(crate::write::add_link(
-            &write_store(false)?,
-            &args.id,
-            &args.target_id,
-        )),
+        Some(Command::Link(args)) => run_link(args),
         Some(Command::Unlink(args)) => print_write(crate::write::remove_link(
             &write_store(false)?,
             &args.id,
@@ -417,6 +409,48 @@ fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> 
         assignee: args.assignee,
         tag: args.tag,
     })
+}
+
+fn run_start(args: IdArgs) -> Result<(), String> {
+    let store = write_store(false)?;
+    let resolved =
+        crate::write::resolve_start(&store, &args.id).map_err(|error| error.to_string())?;
+    let affected = [resolved.path.clone()];
+    let transaction =
+        crate::transaction::LocalGitTransaction::begin(store.tickets_dir(), &affected)
+            .map_err(|error| error.to_string())?;
+
+    let Some(transaction) = transaction else {
+        return print_write(crate::write::set_status(&store, &args.id, "in_progress"));
+    };
+    let planned = crate::write::plan_start(&resolved).map_err(|error| error.to_string())?;
+    let subject = format!("tko: start {}", resolved.id);
+    transaction
+        .record(&planned.replacements, &subject)
+        .map_err(|error| error.to_string())?;
+    print!("{}", planned.output);
+    Ok(())
+}
+
+fn run_link(args: RelationArgs) -> Result<(), String> {
+    let store = write_store(false)?;
+    let resolved = crate::write::resolve_link(&store, &args.id, &args.target_id)
+        .map_err(|error| error.to_string())?;
+    let affected = [resolved.left.path.clone(), resolved.right.path.clone()];
+    let transaction =
+        crate::transaction::LocalGitTransaction::begin(store.tickets_dir(), &affected)
+            .map_err(|error| error.to_string())?;
+
+    let Some(transaction) = transaction else {
+        return print_write(crate::write::add_link(&store, &args.id, &args.target_id));
+    };
+    let planned = crate::write::plan_link(&resolved).map_err(|error| error.to_string())?;
+    let subject = format!("tko: link {} {}", resolved.left.id, resolved.right.id);
+    transaction
+        .record(&planned.replacements, &subject)
+        .map_err(|error| error.to_string())?;
+    print!("{}", planned.output);
+    Ok(())
 }
 
 fn print_read(result: crate::read::Result<String>) -> Result<(), String> {

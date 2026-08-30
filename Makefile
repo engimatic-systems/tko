@@ -6,7 +6,7 @@ PREFIX ?= $(HOME)/.local
 INSTALL_ROOT ?= $(PREFIX)
 CARGO_INSTALL_FLAGS ?= --locked
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/transaction.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/git_transactions.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
 
 .PHONY: tangle tangle-check check test install install-smoke
 
