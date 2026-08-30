@@ -22,6 +22,7 @@ Generated files in this scaffold:
 - =Makefile=
 - =src/lib.rs=
 - =src/storage.rs=
+- =src/transaction.rs=
 - =src/query.rs=
 - =src/read.rs=
 - =src/write.rs=
@@ -31,6 +32,7 @@ Generated files in this scaffold:
 - =src/main.rs=
 - =tests/cli.rs=
 - =tests/storage.rs=
+- =tests/git_transactions.rs=
 - =tests/read.rs=
 - =tests/write.rs=
 - =tests/lint.rs=
@@ -105,7 +107,7 @@ PREFIX ?= $(HOME)/.local
 INSTALL_ROOT ?= $(PREFIX)
 CARGO_INSTALL_FLAGS ?= --locked
 
-TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
+TANGLE_OUTPUTS := .gitignore Cargo.toml Makefile src/lib.rs src/storage.rs src/transaction.rs src/query.rs src/read.rs src/write.rs src/lint.rs src/notes.rs src/cli.rs src/main.rs tests/cli.rs tests/storage.rs tests/git_transactions.rs tests/read.rs tests/write.rs tests/lint.rs tests/notes.rs
 
 .PHONY: tangle tangle-check check test install install-smoke
 
@@ -256,6 +258,7 @@ pub mod notes;
 pub mod query;
 pub mod read;
 pub mod storage;
+pub(crate) mod transaction;
 pub mod write;
 #+end_src
 
@@ -495,7 +498,13 @@ pub struct TypeShape {
     pub allowed: &'static [&'static str],
 }
 
-const TASK_FAMILY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+const TASK_FAMILY_ALLOWED: &[&str] = &[
+    "Description",
+    "Scope",
+    "Design",
+    "Acceptance Criteria",
+    "Notes",
+];
 const TASK_FAMILY_SCAFFOLD: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria"];
 
 static TYPE_SHAPES: &[TypeShape] = &[
@@ -763,22 +772,34 @@ pub fn format_list_value(items: &[String]) -> String {
 
 #+begin_example
 require TKO_* writes
-update existing top-level drawer entry when present
-insert drawer or missing property when absent
+replace_property(text, key, value):
+  update an existing top-level drawer entry when present
+  otherwise insert the drawer or missing property
+  return replacement text without touching the filesystem
+
+set_property(path, key, value):
+  read the original text
+  calculate replacement text
+  persist it for the ordinary write path
 #+end_example
 
 #+begin_src rust :tangle src/storage.rs
 
 pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    fs::write(path, replace_property(&text, key, value)?)?;
+    Ok(())
+}
+
+pub(crate) fn replace_property(text: &str, key: &str, value: &str) -> Result<String> {
     if !key.starts_with("TKO_") {
         return Err(StorageError::InvalidProperty(format!(
             "normal writes require TKO_* key, got {key}"
         )));
     }
 
-    let text = fs::read_to_string(path)?;
-    let mut lines = split_lines(&text);
-    let document = OrgDocument::parse(&text);
+    let mut lines = split_lines(text);
+    let document = OrgDocument::parse(text);
 
     if let Some(drawer) = document.drawer {
         if let Some(entry) = drawer.entries.iter().find(|entry| entry.key == key) {
@@ -787,14 +808,12 @@ pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
         } else {
             lines.insert(drawer.end_line, format!(":{key}: {value}\n"));
         }
-        fs::write(path, lines.concat())?;
+        Ok(lines.concat())
     } else {
         let mut updated = format!(":PROPERTIES:\n:{key}: {value}\n:END:\n\n");
-        updated.push_str(&text);
-        fs::write(path, updated)?;
+        updated.push_str(text);
+        Ok(updated)
     }
-
-    Ok(())
 }
 #+end_src
 
@@ -999,6 +1018,426 @@ fn line_ending(line: &str) -> &'static str {
         "\n"
     } else {
         ""
+    }
+}
+#+end_src
+
+** Local Git Transaction Spike
+:PROPERTIES:
+:CUSTOM_ID: local-git-transaction-spike
+:END:
+
+This disposable boundary owns only local Git validation, locking, exact-file
+persistence, staging, commit, and ordinary-error rollback. It deliberately
+knows nothing about Org properties or ticket relations. A ticket directory is
+transactional only when it has its own =.git= marker and is the root of that
+worktree; ordinary directories keep the existing non-Git write path.
+
+*** Transaction model and discovery
+
+#+begin_example
+ExactReplacement: path plus byte-for-byte original and replacement text
+
+LocalGitTransaction::begin(ticket_root, affected_paths):
+  no .git marker -> return no transaction
+  canonicalize the ticket root and require it to equal Git's worktree root
+  acquire an atomic directory lock inside this worktree's Git directory
+  reject unresolved index entries or any staged change
+  require every affected path to be tracked and free of unstaged edits
+  retain the lock through planning, persistence, and commit
+#+end_example
+
+#+begin_src rust :tangle src/transaction.rs
+// Generated from tko.org. Do not edit by hand.
+
+use std::collections::BTreeSet;
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+pub(crate) type Result<T> = std::result::Result<T, TransactionError>;
+
+#[derive(Debug)]
+pub(crate) struct TransactionError {
+    message: String,
+}
+
+impl TransactionError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for TransactionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
+    }
+}
+
+impl Error for TransactionError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactReplacement {
+    pub(crate) path: PathBuf,
+    pub(crate) original: String,
+    pub(crate) replacement: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalGitTransaction {
+    root: PathBuf,
+    affected: BTreeSet<PathBuf>,
+    _lock: StoreLock,
+}
+
+impl LocalGitTransaction {
+    pub(crate) fn begin(ticket_root: &Path, affected_paths: &[PathBuf]) -> Result<Option<Self>> {
+        if !ticket_root.join(".git").exists() {
+            return Ok(None);
+        }
+
+        let root = fs::canonicalize(ticket_root).map_err(|error| {
+            TransactionError::new(format!(
+                "cannot resolve ticket store {}: {error}",
+                ticket_root.display()
+            ))
+        })?;
+        let git_root = git_text(&root, &["rev-parse", "--show-toplevel"])?;
+        let git_root = fs::canonicalize(git_root.trim()).map_err(|error| {
+            TransactionError::new(format!("cannot resolve Git worktree root: {error}"))
+        })?;
+        if git_root != root {
+            return Err(TransactionError::new(format!(
+                "ticket store {} is not the root of its Git worktree",
+                root.display()
+            )));
+        }
+
+        let lock_path = PathBuf::from(
+            git_text(
+                &root,
+                &[
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-path",
+                    "tko-transaction.lock",
+                ],
+            )?
+            .trim(),
+        );
+        let lock = StoreLock::acquire(lock_path)?;
+        let affected = affected_paths
+            .iter()
+            .map(|path| relative_ticket_path(&root, path))
+            .collect::<Result<BTreeSet<_>>>()?;
+        if affected.is_empty() {
+            return Err(TransactionError::new(
+                "local Git transaction requires at least one affected ticket",
+            ));
+        }
+
+        let transaction = Self {
+            root,
+            affected,
+            _lock: lock,
+        };
+        transaction.require_healthy_index()?;
+        transaction.require_clean_affected_paths()?;
+        Ok(Some(transaction))
+    }
+
+    fn require_healthy_index(&self) -> Result<()> {
+        let unmerged = git_text(&self.root, &["ls-files", "--unmerged"])?;
+        if !unmerged.is_empty() {
+            return Err(TransactionError::new(
+                "ticket Git worktree has unresolved conflicts",
+            ));
+        }
+
+        match git_diff_status(&self.root, &["diff", "--cached", "--quiet", "--"])? {
+            false => Ok(()),
+            true => Err(TransactionError::new(
+                "ticket Git worktree has staged changes; commit or unstage them first",
+            )),
+        }
+    }
+
+    fn require_clean_affected_paths(&self) -> Result<()> {
+        for path in &self.affected {
+            let tracked = git_with_path(&self.root, &["ls-files", "--error-unmatch", "--"], path)?;
+            if !tracked.status.success() {
+                return Err(TransactionError::new(format!(
+                    "affected ticket is not tracked by Git: {}",
+                    path.display()
+                )));
+            }
+
+            let dirty = git_with_path(&self.root, &["diff", "--quiet", "--"], path)?;
+            match dirty.status.code() {
+                Some(0) => {}
+                Some(1) => {
+                    return Err(TransactionError::new(format!(
+                        "affected ticket has local modifications: {}",
+                        path.display()
+                    )));
+                }
+                _ => return Err(git_failure("inspect affected ticket", &dirty)),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct StoreLock {
+    path: PathBuf,
+}
+
+impl StoreLock {
+    fn acquire(path: PathBuf) -> Result<Self> {
+        fs::create_dir(&path).map_err(|error| {
+            TransactionError::new(format!(
+                "cannot acquire ticket transaction lock {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+#+end_src
+
+*** Persistence, exact staging, and rollback
+
+#+begin_example
+record(replacements, subject):
+  empty replacements -> return without staging or committing
+  require each replacement path to be a distinct affected path
+  verify every on-disk original before writing any replacement
+  persist replacements in order
+    write failure -> restore originals and reset the index
+  git add exactly the replacement paths
+    add failure -> restore originals and reset the index
+  require the staged path set to equal the replacement path set
+    mismatch -> restore originals and reset the index
+  create one local commit with the supplied subject
+    commit failure -> restore originals and reset the index
+  leave unrelated worktree changes untouched and return commit-created=true
+
+rollback(replacements):
+  rewrite every original even if an earlier restore fails
+  reset the worktree's initially-empty index
+  report rollback failures alongside the triggering failure
+#+end_example
+
+#+begin_src rust :tangle src/transaction.rs
+
+impl LocalGitTransaction {
+    pub(crate) fn record(&self, replacements: &[ExactReplacement], subject: &str) -> Result<bool> {
+        if replacements.is_empty() {
+            return Ok(false);
+        }
+
+        let mut relative_paths = BTreeSet::new();
+        for replacement in replacements {
+            let relative = relative_ticket_path(&self.root, &replacement.path)?;
+            if !self.affected.contains(&relative) {
+                return Err(TransactionError::new(format!(
+                    "replacement is outside the resolved affected set: {}",
+                    relative.display()
+                )));
+            }
+            if !relative_paths.insert(relative) {
+                return Err(TransactionError::new("duplicate replacement path"));
+            }
+        }
+
+        for replacement in replacements {
+            let current = fs::read_to_string(&replacement.path).map_err(|error| {
+                TransactionError::new(format!(
+                    "cannot verify original {}: {error}",
+                    replacement.path.display()
+                ))
+            })?;
+            if current != replacement.original {
+                return Err(TransactionError::new(format!(
+                    "affected ticket changed while planning: {}",
+                    replacement.path.display()
+                )));
+            }
+        }
+
+        for replacement in replacements {
+            if let Err(error) = fs::write(&replacement.path, &replacement.replacement) {
+                return Err(self.rollback_after(
+                    replacements,
+                    format!("cannot persist {}: {error}", replacement.path.display()),
+                ));
+            }
+        }
+
+        let mut add = Command::new("git");
+        add.arg("-C").arg(&self.root).arg("add").arg("--");
+        for path in &relative_paths {
+            add.arg(path);
+        }
+        let add = add.output().map_err(|error| {
+            self.rollback_after(replacements, format!("cannot invoke git add: {error}"))
+        })?;
+        if !add.status.success() {
+            return Err(self.rollback_after(replacements, git_failure_message("git add", &add)));
+        }
+
+        let staged_output =
+            match git_output(&self.root, &["diff", "--cached", "--name-only", "-z", "--"]) {
+                Ok(output) => output,
+                Err(error) => return Err(self.rollback_after(replacements, error.to_string())),
+            };
+        if !staged_output.status.success() {
+            return Err(self.rollback_after(
+                replacements,
+                git_failure_message("inspect staged paths", &staged_output),
+            ));
+        }
+        let staged = String::from_utf8(staged_output.stdout).map_err(|error| {
+            self.rollback_after(
+                replacements,
+                format!("staged path output is not UTF-8: {error}"),
+            )
+        })?;
+        let staged = staged
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect::<BTreeSet<_>>();
+        if staged != relative_paths {
+            return Err(self.rollback_after(
+                replacements,
+                "Git staged a path set different from the exact replacements".to_string(),
+            ));
+        }
+
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(["commit", "--quiet", "-m", subject, "--"])
+            .output()
+            .map_err(|error| {
+                self.rollback_after(replacements, format!("cannot invoke git commit: {error}"))
+            })?;
+        if !commit.status.success() {
+            return Err(
+                self.rollback_after(replacements, git_failure_message("git commit", &commit))
+            );
+        }
+
+        Ok(true)
+    }
+
+    fn rollback_after(
+        &self,
+        replacements: &[ExactReplacement],
+        failure: String,
+    ) -> TransactionError {
+        let mut rollback_failures = Vec::new();
+        for replacement in replacements {
+            if let Err(error) = fs::write(&replacement.path, &replacement.original) {
+                rollback_failures.push(format!("restore {}: {error}", replacement.path.display()));
+            }
+        }
+
+        let reset = git_output(&self.root, &["reset", "--quiet", "--"]);
+        match reset {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => rollback_failures.push(git_failure_message("git reset", &output)),
+            Err(error) => rollback_failures.push(error.to_string()),
+        }
+
+        if rollback_failures.is_empty() {
+            TransactionError::new(format!(
+                "{failure}; restored affected files and empty index"
+            ))
+        } else {
+            TransactionError::new(format!(
+                "{failure}; rollback also failed: {}",
+                rollback_failures.join("; ")
+            ))
+        }
+    }
+}
+
+fn relative_ticket_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    let path = fs::canonicalize(path).map_err(|error| {
+        TransactionError::new(format!(
+            "cannot resolve affected path {}: {error}",
+            path.display()
+        ))
+    })?;
+    path.strip_prefix(root).map(Path::to_path_buf).map_err(|_| {
+        TransactionError::new(format!(
+            "affected path is outside ticket worktree: {}",
+            path.display()
+        ))
+    })
+}
+
+fn git_text(root: &Path, args: &[&str]) -> Result<String> {
+    let output = git_output(root, args)?;
+    if !output.status.success() {
+        return Err(git_failure("run Git command", &output));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| TransactionError::new(format!("Git output is not UTF-8: {error}")))
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| TransactionError::new(format!("cannot invoke git: {error}")))
+}
+
+fn git_with_path(root: &Path, args: &[&str], path: &Path) -> Result<Output> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .arg(path)
+        .output()
+        .map_err(|error| TransactionError::new(format!("cannot invoke git: {error}")))
+}
+
+fn git_diff_status(root: &Path, args: &[&str]) -> Result<bool> {
+    let output = git_output(root, args)?;
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(git_failure("inspect Git diff", &output)),
+    }
+}
+
+fn git_failure(operation: &str, output: &Output) -> TransactionError {
+    TransactionError::new(git_failure_message(operation, output))
+}
+
+fn git_failure_message(operation: &str, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        format!("{operation} failed with {}", output.status)
+    } else {
+        format!("{operation} failed: {detail}")
     }
 }
 #+end_src
@@ -1862,14 +2301,15 @@ shape table (decision/research take =question=, incident takes =impact=).
 // Generated from tko.org. Do not edit by hand.
 
 use crate::storage::{
-    TicketStore, TypeShape, format_list_value, org_heading, section_has_content, type_shape,
-    valid_types,
+    TicketStore, TypeShape, format_list_value, org_heading, parse_ticket, replace_property,
+    section_has_content, type_shape, valid_types,
 };
+use crate::transaction::ExactReplacement;
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, WriteError>;
@@ -1894,6 +2334,24 @@ impl fmt::Display for WriteError {
 }
 
 impl Error for WriteError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedTicket {
+    pub id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedLink {
+    pub left: ResolvedTicket,
+    pub right: ResolvedTicket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedMutation {
+    pub replacements: Vec<ExactReplacement>,
+    pub output: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateTicket {
@@ -1966,7 +2424,11 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = input.assignee.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input
+        .assignee
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
     if let Some(external_ref) = input
@@ -2046,7 +2508,13 @@ fn normalize_sections(mut input: CreateTicket) -> CreateTicket {
 }
 
 fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
-    const SECTION_HEADINGS: &[&str] = &["Scope", "Design", "Acceptance Criteria", "Question", "Impact"];
+    const SECTION_HEADINGS: &[&str] = &[
+        "Scope",
+        "Design",
+        "Acceptance Criteria",
+        "Question",
+        "Impact",
+    ];
     for heading in SECTION_HEADINGS {
         if section_input(input, heading).is_some() && !shape.allowed.contains(heading) {
             return Err(WriteError::new(format!(
@@ -2134,6 +2602,125 @@ pub fn close(store: &TicketStore, id: &str, reason: Option<&str>) -> Result<Stri
 }
 #+end_src
 
+*** Exact replacement planners for the spike
+
+These planners are deliberately ticket-specific and Git-free. Resolution
+happens before the transaction lock; planning reads and parses the resolved
+files while the lock is held, then emits exact original/replacement pairs.
+The ordinary public write functions above remain the non-Git behavior.
+
+#+begin_example
+resolve_start(store, id):
+  resolve one partial id to its exact stem and path
+
+resolve_link(store, left, right):
+  resolve both exact stems and paths
+  reject a self-link
+
+plan_start(resolved):
+  read the exact original and replace TKO_STATUS with in_progress in memory
+  omit an identical replacement so a semantic no-op has no commit
+  return the existing command output
+
+plan_link(resolved):
+  read and parse both exact originals
+  add each resolved id to the other ticket's links in memory
+  calculate each property replacement independently
+  emit only changed files and the existing idempotent command output
+#+end_example
+
+#+begin_src rust :tangle src/write.rs
+
+pub(crate) fn resolve_start(store: &TicketStore, id: &str) -> Result<ResolvedTicket> {
+    resolve_ticket(store, id)
+}
+
+pub(crate) fn resolve_link(store: &TicketStore, id: &str, target_id: &str) -> Result<ResolvedLink> {
+    let left = resolve_ticket(store, id)?;
+    let right = resolve_ticket(store, target_id)?;
+    if left.id == right.id {
+        return Err(WriteError::new("self-link is not allowed"));
+    }
+    Ok(ResolvedLink { left, right })
+}
+
+pub(crate) fn plan_start(ticket: &ResolvedTicket) -> Result<PlannedMutation> {
+    let original =
+        fs::read_to_string(&ticket.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let replacement = replace_property(&original, "TKO_STATUS", "in_progress")
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let replacements = exact_replacements([(&ticket.path, original, replacement)]);
+    Ok(PlannedMutation {
+        replacements,
+        output: format!("Updated {} -> in_progress\n", ticket.id),
+    })
+}
+
+pub(crate) fn plan_link(link: &ResolvedLink) -> Result<PlannedMutation> {
+    let left_original =
+        fs::read_to_string(&link.left.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let right_original =
+        fs::read_to_string(&link.right.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let mut left = parse_ticket(&link.left.path, &left_original)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let mut right = parse_ticket(&link.right.path, &right_original)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+
+    let left_changed = mutate_values(&mut left.properties.links, &link.right.id, Mutation::Add);
+    let right_changed = mutate_values(&mut right.properties.links, &link.left.id, Mutation::Add);
+    let left_replacement = replace_property(
+        &left_original,
+        "TKO_LINKS",
+        &format_list_value(&left.properties.links),
+    )
+    .map_err(|error| WriteError::new(error.to_string()))?;
+    let right_replacement = replace_property(
+        &right_original,
+        "TKO_LINKS",
+        &format_list_value(&right.properties.links),
+    )
+    .map_err(|error| WriteError::new(error.to_string()))?;
+
+    Ok(PlannedMutation {
+        replacements: exact_replacements([
+            (&link.left.path, left_original, left_replacement),
+            (&link.right.path, right_original, right_replacement),
+        ]),
+        output: relation_message(
+            RelationKind::Link,
+            Mutation::Add,
+            left_changed || right_changed,
+            &link.left.id,
+            &link.right.id,
+        ),
+    })
+}
+
+fn resolve_ticket(store: &TicketStore, id: &str) -> Result<ResolvedTicket> {
+    let path = store
+        .resolve_id(id)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(ResolvedTicket {
+        id: file_stem(&path)?,
+        path,
+    })
+}
+
+fn exact_replacements<const N: usize>(
+    replacements: [(&Path, String, String); N],
+) -> Vec<ExactReplacement> {
+    replacements
+        .into_iter()
+        .filter(|(_, original, replacement)| original != replacement)
+        .map(|(path, original, replacement)| ExactReplacement {
+            path: path.to_path_buf(),
+            original,
+            replacement,
+        })
+        .collect()
+}
+#+end_src
+
 *** Close gate helpers
 
 #+begin_example
@@ -2203,9 +2790,8 @@ fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Resu
 fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
     let lines = document.split_inclusive('\n').collect::<Vec<_>>();
     let Some(heading_index) = lines.iter().position(|line| {
-        org_heading(line).is_some_and(|(level, title)| {
-            level == 2 && title.eq_ignore_ascii_case(heading)
-        })
+        org_heading(line)
+            .is_some_and(|(level, title)| level == 2 && title.eq_ignore_ascii_case(heading))
     }) else {
         let mut updated = document.to_string();
         if !updated.ends_with('\n') && !updated.is_empty() {
@@ -3711,11 +4297,7 @@ where
             &args.id,
             &args.status,
         )),
-        Some(Command::Start(args)) => print_write(crate::write::set_status(
-            &write_store(false)?,
-            &args.id,
-            "in_progress",
-        )),
+        Some(Command::Start(args)) => run_start(args),
         Some(Command::Block(args)) => print_write(crate::write::set_status(
             &write_store(false)?,
             &args.id,
@@ -3741,11 +4323,7 @@ where
             &args.id,
             &args.target_id,
         )),
-        Some(Command::Link(args)) => print_write(crate::write::add_link(
-            &write_store(false)?,
-            &args.id,
-            &args.target_id,
-        )),
+        Some(Command::Link(args)) => run_link(args),
         Some(Command::Unlink(args)) => print_write(crate::write::remove_link(
             &write_store(false)?,
             &args.id,
@@ -3871,6 +4449,71 @@ fn filters(args: FilterArgs, status: Option<String>) -> Result<Filters, String> 
         assignee: args.assignee,
         tag: args.tag,
     })
+}
+#+end_src
+
+*** Local Git spike dispatch
+
+Only the representative =start= and =link= commands enter this experimental
+pipeline. When the ticket directory is not its own Git worktree, the existing
+write function runs unchanged.
+
+#+begin_example
+run_start(args):
+  discover the write store and resolve the affected ticket
+  begin an optional local Git transaction over its exact path
+    plain store -> call ordinary set_status
+    Git store -> plan while locked, record exact replacements, print output
+
+run_link(args):
+  discover the write store and resolve both affected tickets
+  begin an optional local Git transaction over both exact paths
+    plain store -> call ordinary add_link
+    Git store -> plan while locked, record one exact two-file commit, print output
+#+end_example
+
+#+begin_src rust :tangle src/cli.rs
+
+fn run_start(args: IdArgs) -> Result<(), String> {
+    let store = write_store(false)?;
+    let resolved =
+        crate::write::resolve_start(&store, &args.id).map_err(|error| error.to_string())?;
+    let affected = [resolved.path.clone()];
+    let transaction =
+        crate::transaction::LocalGitTransaction::begin(store.tickets_dir(), &affected)
+            .map_err(|error| error.to_string())?;
+
+    let Some(transaction) = transaction else {
+        return print_write(crate::write::set_status(&store, &args.id, "in_progress"));
+    };
+    let planned = crate::write::plan_start(&resolved).map_err(|error| error.to_string())?;
+    let subject = format!("tko: start {}", resolved.id);
+    transaction
+        .record(&planned.replacements, &subject)
+        .map_err(|error| error.to_string())?;
+    print!("{}", planned.output);
+    Ok(())
+}
+
+fn run_link(args: RelationArgs) -> Result<(), String> {
+    let store = write_store(false)?;
+    let resolved = crate::write::resolve_link(&store, &args.id, &args.target_id)
+        .map_err(|error| error.to_string())?;
+    let affected = [resolved.left.path.clone(), resolved.right.path.clone()];
+    let transaction =
+        crate::transaction::LocalGitTransaction::begin(store.tickets_dir(), &affected)
+            .map_err(|error| error.to_string())?;
+
+    let Some(transaction) = transaction else {
+        return print_write(crate::write::add_link(&store, &args.id, &args.target_id));
+    };
+    let planned = crate::write::plan_link(&resolved).map_err(|error| error.to_string())?;
+    let subject = format!("tko: link {} {}", resolved.left.id, resolved.right.id);
+    transaction
+        .record(&planned.replacements, &subject)
+        .map_err(|error| error.to_string())?;
+    print!("{}", planned.output);
+    Ok(())
 }
 #+end_src
 
@@ -4424,6 +5067,515 @@ fn locates_sections_and_derives_semantic_vocabulary() {
 }
 #+end_src
 
+** Local Git Transaction Spike Tests
+:PROPERTIES:
+:CUSTOM_ID: local-git-transaction-spike-tests
+:END:
+
+The spike tests use real disposable repositories and a linked ticket worktree.
+They never point the prototype at the project ticket store.
+
+*** Git fixture
+
+#+begin_example
+GitFixture::new:
+  initialize a disposable main branch with local commit identity
+  create an orphan tickets branch containing three clean ticket files
+  return to main and attach tickets as a linked worktree
+
+run(args):
+  execute the compiled tko with TICKETS_DIR set to the linked worktree
+
+git helpers:
+  expose HEAD, subjects, commit paths, index state, and low-level conflict setup
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+// Generated from tko.org. Do not edit by hand.
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::Duration;
+use tempfile::TempDir;
+
+fn tko_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_tko")
+}
+
+struct GitFixture {
+    _temp: TempDir,
+    repo: PathBuf,
+    tickets: PathBuf,
+}
+
+impl GitFixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("sys");
+        fs::create_dir(&repo).expect("repo dir");
+        git_ok(&repo, &["init", "--quiet", "--initial-branch=main"]);
+        git_ok(&repo, &["config", "user.name", "TKO Transaction Test"]);
+        git_ok(
+            &repo,
+            &["config", "user.email", "tko-transaction@example.invalid"],
+        );
+        git_ok(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("README"), "fixture\n").expect("README");
+        git_ok(&repo, &["add", "README"]);
+        git_ok(&repo, &["commit", "--quiet", "-m", "initial"]);
+
+        git_ok(&repo, &["switch", "--quiet", "--orphan", "tickets"]);
+        write_ticket(&repo, "sys-a", "open", "[]");
+        write_ticket(&repo, "sys-b", "open", "[]");
+        write_ticket(&repo, "sys-c", "open", "[]");
+        git_ok(&repo, &["add", "sys-a.org", "sys-b.org", "sys-c.org"]);
+        git_ok(&repo, &["commit", "--quiet", "-m", "ticket snapshot"]);
+        git_ok(&repo, &["switch", "--quiet", "main"]);
+
+        let tickets = temp.path().join("tickets-worktree");
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", "--quiet"])
+            .arg(&tickets)
+            .arg("tickets")
+            .output()
+            .expect("git worktree add");
+        assert_git_success("git worktree add", &output);
+
+        Self {
+            _temp: temp,
+            repo,
+            tickets,
+        }
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(tko_bin());
+        command
+            .args(args)
+            .env("TICKETS_DIR", &self.tickets)
+            .current_dir(&self.repo);
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output().expect("run tko")
+    }
+
+    fn success(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8 stdout")
+    }
+
+    fn git(&self, args: &[&str]) -> Output {
+        Command::new("git")
+            .arg("-C")
+            .arg(&self.tickets)
+            .args(args)
+            .output()
+            .expect("run git")
+    }
+
+    fn git_success(&self, args: &[&str]) -> String {
+        let output = self.git(args);
+        assert_git_success("git fixture command", &output);
+        String::from_utf8(output.stdout).expect("UTF-8 git output")
+    }
+
+    fn git_with_input(&self, args: &[&str], input: &str) -> Output {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.tickets)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn git");
+        child
+            .stdin
+            .as_mut()
+            .expect("git stdin")
+            .write_all(input.as_bytes())
+            .expect("write git stdin");
+        child.wait_with_output().expect("wait for git")
+    }
+
+    fn head(&self) -> String {
+        self.git_success(&["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    fn subject(&self) -> String {
+        self.git_success(&["log", "-1", "--format=%s"])
+            .trim()
+            .to_string()
+    }
+
+    fn commit_paths(&self) -> Vec<String> {
+        let mut paths = self
+            .git_success(&["show", "--format=", "--name-only", "HEAD"])
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    }
+
+    fn ticket(&self, id: &str) -> String {
+        fs::read_to_string(self.tickets.join(format!("{id}.org"))).expect("read ticket")
+    }
+
+    fn assert_empty_index(&self) {
+        let output = self.git(&["diff", "--cached", "--quiet", "--"]);
+        assert!(output.status.success(), "ticket index is not empty");
+    }
+}
+
+fn git_ok(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("run fixture git");
+    assert_git_success("fixture git", &output);
+}
+
+fn assert_git_success(operation: &str, output: &Output) {
+    assert!(
+        output.status.success(),
+        "{operation}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_ticket(root: &Path, id: &str, status: &str, links: &str) {
+    fs::write(
+        root.join(format!("{id}.org")),
+        format!(
+            ":PROPERTIES:\n:TKO_ID: {id}\n:TKO_STATUS: {status}\n:TKO_DEPS: []\n:TKO_LINKS: {links}\n:TKO_CREATED: 2026-08-30T00:00:00Z\n:TKO_TYPE: task\n:TKO_PRIORITY: 2\n:TKO_TAGS: []\n:END:\n\n* {id}\n"
+        ),
+    )
+    .expect("write ticket");
+}
+
+fn install_failing_hook(fixture: &GitFixture, body: &str) {
+    let hooks = fixture.tickets.join(".githooks");
+    fs::create_dir(&hooks).expect("hooks dir");
+    let hook = hooks.join("pre-commit");
+    fs::write(&hook, body).expect("pre-commit hook");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("hook mode");
+    }
+    fixture.git_success(&["config", "core.hooksPath", ".githooks"]);
+}
+#+end_src
+
+*** One-file start and semantic no-op
+
+#+begin_example
+clean linked store -> start sys-a
+  creates one commit whose only path is sys-a.org
+  leaves an empty index and writes in_progress
+same semantic start again
+  reports ordinary success without advancing HEAD
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn start_commits_one_ticket_and_repeated_start_is_a_noop() {
+    let fixture = GitFixture::new();
+
+    assert_eq!(
+        fixture.success(&["start", "sys-a"]),
+        "Updated sys-a -> in_progress\n"
+    );
+    assert_eq!(fixture.subject(), "tko: start sys-a");
+    assert_eq!(fixture.commit_paths(), ["sys-a.org"]);
+    println!("representative start commit: {}", fixture.head());
+    assert!(fixture.ticket("sys-a").contains(":TKO_STATUS: in_progress"));
+    fixture.assert_empty_index();
+
+    let committed = fixture.head();
+    assert_eq!(
+        fixture.success(&["start", "sys-a"]),
+        "Updated sys-a -> in_progress\n"
+    );
+    assert_eq!(fixture.head(), committed);
+    fixture.assert_empty_index();
+}
+#+end_src
+
+*** Two-file link and unrelated dirt
+
+#+begin_example
+clean sys-a and sys-b plus an unstaged sys-c edit -> link sys-a sys-b
+  creates one commit containing exactly sys-a.org and sys-b.org
+  writes the symmetric link values
+  leaves sys-c dirty and uncommitted and leaves the index empty
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn link_commits_both_tickets_and_preserves_unrelated_dirt() {
+    let fixture = GitFixture::new();
+    fs::write(
+        fixture.tickets.join("sys-c.org"),
+        format!("{}unrelated edit\n", fixture.ticket("sys-c")),
+    )
+    .expect("dirty unrelated ticket");
+
+    assert_eq!(
+        fixture.success(&["link", "sys-a", "sys-b"]),
+        "Added link: sys-a <-> sys-b\n"
+    );
+    assert_eq!(fixture.subject(), "tko: link sys-a sys-b");
+    assert_eq!(fixture.commit_paths(), ["sys-a.org", "sys-b.org"]);
+    println!("representative link commit: {}", fixture.head());
+    assert!(fixture.ticket("sys-a").contains(":TKO_LINKS: [sys-b]"));
+    assert!(fixture.ticket("sys-b").contains(":TKO_LINKS: [sys-a]"));
+    assert!(fixture.ticket("sys-c").ends_with("unrelated edit\n"));
+    assert_eq!(
+        fixture.git_success(&["status", "--short", "--", "sys-c.org"]),
+        " M sys-c.org\n"
+    );
+    fixture.assert_empty_index();
+}
+#+end_src
+
+*** Affected manual edits
+
+#+begin_example
+locally edited affected sys-a -> start sys-a
+  refuses before ticket planning or persistence
+  preserves the exact manual edit, HEAD, and empty index
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn preedited_affected_ticket_is_refused_without_mutation() {
+    let fixture = GitFixture::new();
+    let edited = format!("{}manual edit\n", fixture.ticket("sys-a"));
+    fs::write(fixture.tickets.join("sys-a.org"), &edited).expect("manual edit");
+    let head = fixture.head();
+
+    let output = fixture.run(&["start", "sys-a"]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("affected ticket has local modifications: sys-a.org")
+    );
+    assert_eq!(fixture.ticket("sys-a"), edited);
+    assert_eq!(fixture.head(), head);
+    fixture.assert_empty_index();
+}
+#+end_src
+
+*** Staged and unresolved index refusals
+
+#+begin_example
+unrelated staged sys-c -> start sys-a
+  refuses without changing sys-a or HEAD
+
+index with three conflict stages for sys-a -> start sys-b
+  refuses unresolved conflicts before changing sys-b or HEAD
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn staged_changes_and_unresolved_conflicts_are_refused() {
+    let staged = GitFixture::new();
+    fs::write(
+        staged.tickets.join("sys-c.org"),
+        format!("{}staged\n", staged.ticket("sys-c")),
+    )
+    .expect("staged edit");
+    staged.git_success(&["add", "sys-c.org"]);
+    let original_a = staged.ticket("sys-a");
+    let head = staged.head();
+    let output = staged.run(&["start", "sys-a"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("has staged changes"));
+    assert_eq!(staged.ticket("sys-a"), original_a);
+    assert_eq!(staged.head(), head);
+
+    let conflicted = GitFixture::new();
+    let base = conflicted.git_with_input(&["hash-object", "-w", "--stdin"], "base\n");
+    let ours = conflicted.git_with_input(&["hash-object", "-w", "--stdin"], "ours\n");
+    let theirs = conflicted.git_with_input(&["hash-object", "-w", "--stdin"], "theirs\n");
+    assert_git_success("hash base", &base);
+    assert_git_success("hash ours", &ours);
+    assert_git_success("hash theirs", &theirs);
+    conflicted.git_success(&["update-index", "--force-remove", "--", "sys-a.org"]);
+    let stages = format!(
+        "100644 {} 1\tsys-a.org\n100644 {} 2\tsys-a.org\n100644 {} 3\tsys-a.org\n",
+        String::from_utf8_lossy(&base.stdout).trim(),
+        String::from_utf8_lossy(&ours.stdout).trim(),
+        String::from_utf8_lossy(&theirs.stdout).trim(),
+    );
+    let update = conflicted.git_with_input(&["update-index", "--index-info"], &stages);
+    assert_git_success("install conflict stages", &update);
+    let original_b = conflicted.ticket("sys-b");
+    let head = conflicted.head();
+    let output = conflicted.run(&["start", "sys-b"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unresolved conflicts"));
+    assert_eq!(conflicted.ticket("sys-b"), original_b);
+    assert_eq!(conflicted.head(), head);
+}
+#+end_src
+
+*** Injected commit failure
+
+#+begin_example
+clean linked store with an always-failing pre-commit hook -> start sys-a
+  fails after persistence and staging
+  restores sys-a byte-for-byte, restores the empty index, and preserves HEAD
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn commit_failure_restores_affected_files_and_empty_index() {
+    let fixture = GitFixture::new();
+    install_failing_hook(&fixture, "#!/bin/sh\nexit 1\n");
+    let original = fixture.ticket("sys-a");
+    let head = fixture.head();
+
+    let output = fixture.run(&["start", "sys-a"]);
+
+    assert!(!output.status.success());
+    println!(
+        "failure injection: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("restored affected files and empty index")
+    );
+    assert_eq!(fixture.ticket("sys-a"), original);
+    assert_eq!(fixture.head(), head);
+    assert_eq!(
+        fixture.git_success(&["status", "--short", "--", "sys-a.org"]),
+        ""
+    );
+    fixture.assert_empty_index();
+}
+#+end_src
+
+*** Concurrent mutation exclusion
+
+#+begin_example
+first start blocks inside its pre-commit hook while holding the store lock
+second link against two other clean tickets
+  fails to acquire the same transaction lock
+release first hook
+  first commits successfully
+  second's two tickets remain unchanged and the index is empty
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn concurrent_mutations_cannot_interleave_transaction_state() {
+    let fixture = GitFixture::new();
+    install_failing_hook(
+        &fixture,
+        "#!/bin/sh\nset -eu\n: >\"$TKO_HOOK_READY\"\nwhile [ ! -e \"$TKO_HOOK_RELEASE\" ]; do sleep 0.01; done\n",
+    );
+    let ready = fixture.repo.join("hook-ready");
+    let release = fixture.repo.join("hook-release");
+    let mut first = fixture.command(&["start", "sys-a"]);
+    first
+        .env("TKO_HOOK_READY", &ready)
+        .env("TKO_HOOK_RELEASE", &release)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let first = first.spawn().expect("spawn first tko");
+
+    for _ in 0..500 {
+        if ready.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready.exists(), "first mutation did not reach commit hook");
+
+    let second = fixture.run(&["link", "sys-b", "sys-c"]);
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("cannot acquire ticket transaction lock")
+    );
+    fs::write(&release, "release\n").expect("release first mutation");
+    let first = first.wait_with_output().expect("wait for first tko");
+    assert!(
+        first.status.success(),
+        "first stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(fixture.ticket("sys-b").contains(":TKO_LINKS: []"));
+    assert!(fixture.ticket("sys-c").contains(":TKO_LINKS: []"));
+    fixture.assert_empty_index();
+}
+#+end_src
+
+*** Plain store compatibility
+
+#+begin_example
+ordinary non-Git .tickets directory -> start then link
+  retains current file mutation and output behavior
+  does not create Git metadata
+#+end_example
+
+#+begin_src rust :tangle tests/git_transactions.rs
+
+#[test]
+fn plain_non_git_stores_retain_start_and_link_behavior() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let tickets = temp.path().join(".tickets");
+    fs::create_dir(&tickets).expect("tickets dir");
+    write_ticket(&tickets, "sys-a", "open", "[]");
+    write_ticket(&tickets, "sys-b", "open", "[]");
+
+    let run = |args: &[&str]| {
+        Command::new(tko_bin())
+            .args(args)
+            .env("TICKETS_DIR", &tickets)
+            .current_dir(temp.path())
+            .output()
+            .expect("run plain tko")
+    };
+    let start = run(&["start", "sys-a"]);
+    assert!(start.status.success());
+    assert_eq!(start.stdout, b"Updated sys-a -> in_progress\n");
+    let link = run(&["link", "sys-a", "sys-b"]);
+    assert!(link.status.success());
+    assert_eq!(link.stdout, b"Added link: sys-a <-> sys-b\n");
+    assert!(
+        fs::read_to_string(tickets.join("sys-a.org"))
+            .expect("read sys-a")
+            .contains(":TKO_LINKS: [sys-b]")
+    );
+    assert!(!tickets.join(".git").exists());
+}
+#+end_src
+
 ** Read Tests
 :PROPERTIES:
 :CUSTOM_ID: read-tests
@@ -4642,8 +5794,8 @@ fn query_dsl_supports_boolean_membership_and_presence() {
     assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
 
     let complex = fixture.stdout(&[
-        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
-        "contain", "archived",
+        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and",
+        "not", "tags", "contain", "archived",
     ]);
     assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
 
@@ -4849,7 +6001,9 @@ fn create_scaffolds_typed_sections() {
     ]);
     let text = fixture.read(id.trim());
     assert!(text.contains(":TKO_TYPE: decision"));
-    assert!(text.ends_with("* Pick a store\n\n** Question\n\nPostgres or SQLite?\n\n** Resolution\n"));
+    assert!(
+        text.ends_with("* Pick a store\n\n** Question\n\nPostgres or SQLite?\n\n** Resolution\n")
+    );
 
     let id = fixture.stdout(&[
         "create",
@@ -4861,7 +6015,9 @@ fn create_scaffolds_typed_sections() {
     ]);
     let text = fixture.read(id.trim());
     assert!(text.contains(":TKO_TYPE: research"));
-    assert!(text.ends_with("* Survey runtimes\n\n** Question\n\nWhich runtimes fit?\n\n** Findings\n"));
+    assert!(
+        text.ends_with("* Survey runtimes\n\n** Question\n\nWhich runtimes fit?\n\n** Findings\n")
+    );
 
     let id = fixture.stdout(&[
         "create",
@@ -4873,7 +6029,11 @@ fn create_scaffolds_typed_sections() {
     ]);
     let text = fixture.read(id.trim());
     assert!(text.contains(":TKO_TYPE: incident"));
-    assert!(text.ends_with("* API outage\n\n** Impact\n\nWrites failed for 20 minutes\n\n** Resolution\n"));
+    assert!(
+        text.ends_with(
+            "* API outage\n\n** Impact\n\nWrites failed for 20 minutes\n\n** Resolution\n"
+        )
+    );
 
     let id = fixture.stdout(&["create", "Big effort", "--type", "epic"]);
     let text = fixture.read(id.trim());
@@ -4947,7 +6107,14 @@ section inputs normalize before validation:
 fn create_normalizes_section_inputs_before_validation() {
     let fixture = Fixture::new();
 
-    let output = fixture.run(&["create", "Blank question", "--type", "decision", "--question", "\\n"]);
+    let output = fixture.run(&[
+        "create",
+        "Blank question",
+        "--type",
+        "decision",
+        "--question",
+        "\\n",
+    ]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("decision ticket requires --question"));
@@ -5052,12 +6219,20 @@ fn close_gate_requires_resolution_content_for_decisions() {
     let output = fixture.run(&["close", &id]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+    assert!(
+        stderr.contains(
+            "decision ticket requires non-empty Resolution before close (or pass --reason)"
+        )
+    );
 
     let output = fixture.run(&["status", &id, "closed"]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("decision ticket requires non-empty Resolution before close (or pass --reason)"));
+    assert!(
+        stderr.contains(
+            "decision ticket requires non-empty Resolution before close (or pass --reason)"
+        )
+    );
     assert!(fixture.read(&id).contains(":TKO_STATUS: open"));
 
     assert_eq!(
@@ -5100,7 +6275,10 @@ fn close_accepts_prefilled_resolution_and_tasks_stay_ungated() {
         "Updated sys-dec -> closed\n"
     );
 
-    assert_eq!(fixture.stdout(&["close", "sys-a"]), "Updated sys-a -> closed\n");
+    assert_eq!(
+        fixture.stdout(&["close", "sys-a"]),
+        "Updated sys-a -> closed\n"
+    );
 
     let output = fixture.run(&["close", "sys-b", "--reason", "done"]);
     assert_eq!(output.status.code(), Some(2));
@@ -5533,12 +6711,18 @@ fn lint_l005_flags_missing_or_empty_create_sections() {
     let output = fixture.run(&["lint", "sys-missing"]);
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("sys-missing.org:1: L005 required section missing: Question (type decision)"));
+    assert!(
+        stdout
+            .contains("sys-missing.org:1: L005 required section missing: Question (type decision)")
+    );
 
     let output = fixture.run(&["lint", "sys-empty"]);
     assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("sys-empty.org:7: L005 required section is empty: Question (type decision)"));
+    assert!(
+        stdout
+            .contains("sys-empty.org:7: L005 required section is empty: Question (type decision)")
+    );
 }
 #+end_src
 

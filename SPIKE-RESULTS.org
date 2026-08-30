@@ -1,0 +1,231 @@
+#+title: Native Git Transaction Spike Results
+
+* Repository record
+
+- Ticket: =sys-u0zh=
+- Base: =373f5b16f4ebdcd610a57dec224b53230386d51b=
+- Branch: =spike/git-native-transactions=
+- Audited spike commit: =345dee42dd83efd62e1fdb8f99a115350d6778a6=.
+  This is the implementation/source/test/report commit independently audited
+  under =sys-hjap=.
+- Review publication: after the prototype and audit completed, the operator
+  explicitly authorized pushing the disposable branch and opening
+  =engimatic-systems/tko#38=. The PR is a do-not-merge review surface; no
+  production decision, release, installation, or migration is authorized.
+
+The prototype ran only against disposable stores created under temporary
+directories. It did not run against the live sys ticket store and did not
+modify the read-only =repos/tko= reference checkout.
+
+* Answer
+
+=tko= can keep ticket transformation independent of Git while producing exact
+one-file =start= and two-file =link= local commits. The prototype demonstrates
+that boundary for cooperative processes and restores the original affected
+files plus the initially empty index after ordinary pre-commit failures.
+
+It does not demonstrate crash-safe rollback. Process or machine failure after
+the first write can leave working-tree or index state requiring inspection and
+manual recovery. The architectural direction is viable, but the production
+design needs revision around durable recovery, hook behavior, and store
+adoption before it can claim safe transaction ownership.
+
+* Implemented pipeline
+
+The experimental flow is:
+
+#+begin_example
+discover store
+  -> resolve exact affected ticket paths
+  -> when the ticket directory is its own Git worktree root:
+       acquire a per-worktree Git-directory lock
+       reject unresolved conflicts, staged changes, and dirty affected paths
+       calculate exact old/new ticket replacements while locked
+       verify every original before writing any replacement
+       persist replacements
+       git add only replacement paths
+       require staged paths == replacement paths
+       create one local commit
+       on an ordinary failure, restore every original and git reset the index
+  -> otherwise use the pre-existing plain-store write path
+#+end_example
+
+Pipeline ownership remains explicit:
+
+- =write::ResolvedTicket= and =write::ResolvedLink= name affected tickets.
+- =write::plan_start= and =write::plan_link= parse ticket facts and emit
+  =ExactReplacement= values. They do not invoke Git.
+- =storage::replace_property= calculates property text without persistence.
+- =transaction::LocalGitTransaction::begin= owns Git-root discovery, the store
+  lock, index health checks, and affected-path cleanliness checks.
+- =transaction::LocalGitTransaction::record= owns original verification,
+  persistence, exact staging, commit, and ordinary-error rollback. It does not
+  understand Org properties or link semantics.
+- =cli::run_start= and =cli::run_link= select the experimental Git path only
+  for the two representative commands. No public option or generalized
+  backend trait was added.
+
+No network, remote publication, repository initialization/adoption, branch
+migration, or synchronization behavior exists in the spike.
+
+* Behavioral evidence
+
+All cases use real Git commands. Git cases use a real orphan =tickets= branch
+attached as a linked worktree.
+
+| Scenario | Evidence |
+|----------+----------|
+| =start= exact commit | =start_commits_one_ticket_and_repeated_start_is_a_noop= asserts subject =tko: start sys-a= and sole path =sys-a.org=. |
+| =link= exact commit | =link_commits_both_tickets_and_preserves_unrelated_dirt= asserts subject =tko: link sys-a sys-b= and paths =sys-a.org=, =sys-b.org=. |
+| Semantic no-op | A repeated =start sys-a= leaves =HEAD= unchanged and the index empty. |
+| Unrelated dirt | Dirty =sys-c.org= remains unstaged, uncommitted, and byte-preserved after the two-file link commit. |
+| Pre-edited affected ticket | Dirty =sys-a.org= is refused before planning/persistence; its manual text and =HEAD= are unchanged. |
+| Staged state | An unrelated staged =sys-c.org= causes refusal before =sys-a.org= changes. |
+| Unresolved conflict | Three index stages on =sys-a.org= cause refusal before =sys-b.org= changes. |
+| Commit failure | An exiting =pre-commit= hook causes =start= to fail, restores =sys-a.org= byte-for-byte, preserves =HEAD=, and empties the index. |
+| Concurrency | A first =start= blocks in =pre-commit= while holding the lock; a simultaneous =link= fails lock acquisition and changes neither link target. |
+| Plain store | A non-Git =.tickets= directory retains current =start= and =link= output/file behavior and gains no Git metadata. |
+
+* Representative commit history
+
+These hashes came from disposable linked-worktree fixtures and are examples,
+not durable repository objects:
+
+- Start: =0f9b777f57589090fd2f64c8e015dafb3d3020a3=,
+  subject =tko: start sys-a=, changed path =sys-a.org=.
+- Link: =7c034f550fa86be64226b2f0baab7ceaa1b3ffa1=,
+  subject =tko: link sys-a sys-b=, changed paths =sys-a.org= and
+  =sys-b.org=.
+
+The exact evidence commands were:
+
+#+begin_src sh
+nix-shell -p cargo rustc --run \
+  'cargo test --locked --test git_transactions start_commits_one_ticket_and_repeated_start_is_a_noop -- --nocapture'
+nix-shell -p cargo rustc --run \
+  'cargo test --locked --test git_transactions link_commits_both_tickets_and_preserves_unrelated_dirt -- --nocapture'
+#+end_src
+
+* Failure injection
+
+The disposable store configured an executable =pre-commit= hook that exits 1.
+The observed command error was:
+
+#+begin_example
+git commit failed with exit status: 1; restored affected files and empty index
+#+end_example
+
+The test independently asserts all of the following after that error:
+
+- the affected ticket equals its byte-for-byte pre-command original;
+- =HEAD= did not advance;
+- =git status --short -- sys-a.org= is empty;
+- =git diff --cached --quiet --= succeeds.
+
+This proves rollback for an ordinary post-write, post-stage commit failure. It
+does not prove recovery after uncatchable termination or storage failure.
+
+* Residual crash and recovery windows
+
+- A crash after lock creation leaves =tko-transaction.lock= stale in the linked
+  worktree's Git directory. A human must inspect the worktree and remove the
+  stale directory before retrying.
+- A crash during sequential file persistence can leave only a prefix of a
+  two-file change in the worktree. There is no write-ahead journal.
+- A crash after persistence but before or during =git add= leaves affected
+  files dirty. A crash after staging leaves the index non-empty. The next spike
+  command refuses these states rather than guessing recovery.
+- A crash during =git commit= has an ambiguous client result: the commit may or
+  may not exist. Recovery must inspect =HEAD=, the index, worktree, and reflog.
+- A crash after commit success but before lock release leaves a valid commit
+  plus a stale lock.
+- =fs::write= is neither rename-atomic nor followed by file/directory =fsync=;
+  power loss can expose truncated or non-durable content.
+- Ordinary rollback is also sequential. A restore or =git reset= failure is
+  reported, but automatic rollback cannot guarantee completion.
+- The lock coordinates only cooperating =tko= processes. An editor or manual
+  Git command can race after original verification. Rollback could overwrite
+  an external edit made after replacement persistence.
+
+Manual recovery is intentionally not automated in the spike: stop writers,
+inspect =HEAD= and =git status --porcelain=v1=, preserve any human edits, reset
+the index only after inspection, restore or recommit affected tickets, then
+remove a demonstrably stale lock.
+
+* Awkward seams and unexpected scope
+
+- Git-store detection is intentionally only “ticket directory has its own
+  =.git= marker and equals =git rev-parse --show-toplevel=.” It does not define
+  adoption, required branch name, relationship to a caller worktree, or
+  migration policy.
+- The lock lives in this linked worktree's Git directory. That matches one
+  ticket store/index, but it is not a repository-wide exclusion mechanism.
+- Pre-commit hooks run after the exact staged-path check. A hook can stage an
+  unrelated path before =git commit=, so a hostile or surprising hook can
+  violate exact-commit ownership. Production work must disable hooks for this
+  commit boundary or rework commit construction and validate the resulting
+  tree.
+- External Git operations are not locked. A concurrent manual commit, reset,
+  checkout, or index write can invalidate assumptions.
+- The prototype duplicates a small dispatch seam so plain stores retain exact
+  current behavior while Git-backed =start=/=link= use planners. Generalizing
+  this into a backend trait would be premature.
+- Running the requested current =rustfmt= check exposed pre-existing formatting
+  differences in generated Rust. The literate source now includes those
+  mechanical normalizations, so generated files remain formatter- and
+  tangle-clean; no behavior changed in those normalized blocks.
+- Tests use Unix executable pre-commit hooks for failure and concurrency
+  injection. The Git command boundary itself uses =std::process::Command=, but
+  portability beyond the tested Linux environment remains unproven.
+
+* Changed files
+
+- =tko.org= — canonical implementation, pseudocode, and tests.
+- =Makefile= — adds new generated outputs to =TANGLE_OUTPUTS=.
+- =src/lib.rs= — registers the crate-private transaction module.
+- =src/storage.rs= — separates pure property replacement from persistence.
+- =src/write.rs= — adds resolved facts and Git-free =start=/=link= planners.
+- =src/transaction.rs= — local Git validation, locking, exact persistence,
+  staging, commit, and rollback boundary.
+- =src/cli.rs= — routes only =start= and =link= through the optional spike.
+- =tests/git_transactions.rs= — disposable linked-worktree integration tests.
+- =tests/lint.rs=, =tests/read.rs=, =tests/write.rs= — current-rustfmt-only
+  normalization emitted from =tko.org=.
+- =SPIKE-RESULTS.org= — this report.
+
+* Verification
+
+The exact commands and observed results are:
+
+#+begin_src sh
+nix-shell -p cargo rustc rustfmt --run \
+  'cargo fmt --check && cargo test --locked'
+# passed: 58 tests total, including 7 Git transaction integration tests
+
+nix-shell -p cargo rustc emacs-nox gnumake --run 'make tangle-check'
+# passed: tangle regenerated 126 blocks without a generated-file diff;
+# make check passed all 58 tests
+
+git diff --check
+# passed with no output
+
+git status --short --branch
+# reviewed before the local spike commit; only the files listed above changed
+#+end_src
+
+* Recommendation
+
+Revise, then proceed with a second bounded design/prototype if the operator
+still wants native ownership.
+
+The positive result is substantial: exact replacements keep Org semantics out
+of the Git recorder; one- and two-file commits, no-op behavior, unrelated dirt,
+pre-edited refusal, index health checks, ordinary-error rollback, cooperative
+locking, and plain-store compatibility all work with a small explicit seam and
+no Git library.
+
+The revision must define durable crash recovery (journal or recoverable staging
+protocol), atomic/durable file replacement, stale-lock handling, hook policy,
+external-index concurrency, topology/adoption rules, and an import/recovery
+story. Until those are resolved, the spike supports the architecture but not a
+production claim of safe offline-first transaction ownership.

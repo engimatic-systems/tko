@@ -184,7 +184,13 @@ pub struct TypeShape {
     pub allowed: &'static [&'static str],
 }
 
-const TASK_FAMILY_ALLOWED: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria", "Notes"];
+const TASK_FAMILY_ALLOWED: &[&str] = &[
+    "Description",
+    "Scope",
+    "Design",
+    "Acceptance Criteria",
+    "Notes",
+];
 const TASK_FAMILY_SCAFFOLD: &[&str] = &["Description", "Scope", "Design", "Acceptance Criteria"];
 
 static TYPE_SHAPES: &[TypeShape] = &[
@@ -403,15 +409,20 @@ pub fn format_list_value(items: &[String]) -> String {
 }
 
 pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    fs::write(path, replace_property(&text, key, value)?)?;
+    Ok(())
+}
+
+pub(crate) fn replace_property(text: &str, key: &str, value: &str) -> Result<String> {
     if !key.starts_with("TKO_") {
         return Err(StorageError::InvalidProperty(format!(
             "normal writes require TKO_* key, got {key}"
         )));
     }
 
-    let text = fs::read_to_string(path)?;
-    let mut lines = split_lines(&text);
-    let document = OrgDocument::parse(&text);
+    let mut lines = split_lines(text);
+    let document = OrgDocument::parse(text);
 
     if let Some(drawer) = document.drawer {
         if let Some(entry) = drawer.entries.iter().find(|entry| entry.key == key) {
@@ -420,14 +431,12 @@ pub fn set_property(path: &Path, key: &str, value: &str) -> Result<()> {
         } else {
             lines.insert(drawer.end_line, format!(":{key}: {value}\n"));
         }
-        fs::write(path, lines.concat())?;
+        Ok(lines.concat())
     } else {
         let mut updated = format!(":PROPERTIES:\n:{key}: {value}\n:END:\n\n");
-        updated.push_str(&text);
-        fs::write(path, updated)?;
+        updated.push_str(text);
+        Ok(updated)
     }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone)]

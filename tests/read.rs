@@ -163,8 +163,8 @@ fn query_dsl_supports_boolean_membership_and_presence() {
     assert_eq!(lines(&repo), ["sys-a", "sys-b"]);
 
     let complex = fixture.stdout(&[
-        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and", "not", "tags",
-        "contain", "archived",
+        "query", "--output", "id", "(", "type", "=", "bug", "or", "priority", "=", "3", ")", "and",
+        "not", "tags", "contain", "archived",
     ]);
     assert_eq!(lines(&complex), ["sys-a", "sys-d"]);
 

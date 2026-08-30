@@ -1,14 +1,15 @@
 // Generated from tko.org. Do not edit by hand.
 
 use crate::storage::{
-    TicketStore, TypeShape, format_list_value, org_heading, section_has_content, type_shape,
-    valid_types,
+    TicketStore, TypeShape, format_list_value, org_heading, parse_ticket, replace_property,
+    section_has_content, type_shape, valid_types,
 };
+use crate::transaction::ExactReplacement;
 use chrono::Utc;
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, WriteError>;
@@ -33,6 +34,24 @@ impl fmt::Display for WriteError {
 }
 
 impl Error for WriteError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedTicket {
+    pub id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedLink {
+    pub left: ResolvedTicket,
+    pub right: ResolvedTicket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedMutation {
+    pub replacements: Vec<ExactReplacement>,
+    pub output: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateTicket {
@@ -82,7 +101,11 @@ pub fn create(store: &TicketStore, cwd: &Path, input: CreateTicket) -> Result<St
     );
     push_property(&mut text, "TKO_TYPE", &input.ticket_type);
     push_property(&mut text, "TKO_PRIORITY", &input.priority.to_string());
-    if let Some(assignee) = input.assignee.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(assignee) = input
+        .assignee
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         push_property(&mut text, "TKO_ASSIGNEE", assignee.trim());
     }
     if let Some(external_ref) = input
@@ -133,7 +156,13 @@ fn normalize_sections(mut input: CreateTicket) -> CreateTicket {
 }
 
 fn validate_section_inputs(input: &CreateTicket, shape: &TypeShape) -> Result<()> {
-    const SECTION_HEADINGS: &[&str] = &["Scope", "Design", "Acceptance Criteria", "Question", "Impact"];
+    const SECTION_HEADINGS: &[&str] = &[
+        "Scope",
+        "Design",
+        "Acceptance Criteria",
+        "Question",
+        "Impact",
+    ];
     for heading in SECTION_HEADINGS {
         if section_input(input, heading).is_some() && !shape.allowed.contains(heading) {
             return Err(WriteError::new(format!(
@@ -194,6 +223,95 @@ pub fn close(store: &TicketStore, id: &str, reason: Option<&str>) -> Result<Stri
     set_status(store, &resolved, "closed")
 }
 
+pub(crate) fn resolve_start(store: &TicketStore, id: &str) -> Result<ResolvedTicket> {
+    resolve_ticket(store, id)
+}
+
+pub(crate) fn resolve_link(store: &TicketStore, id: &str, target_id: &str) -> Result<ResolvedLink> {
+    let left = resolve_ticket(store, id)?;
+    let right = resolve_ticket(store, target_id)?;
+    if left.id == right.id {
+        return Err(WriteError::new("self-link is not allowed"));
+    }
+    Ok(ResolvedLink { left, right })
+}
+
+pub(crate) fn plan_start(ticket: &ResolvedTicket) -> Result<PlannedMutation> {
+    let original =
+        fs::read_to_string(&ticket.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let replacement = replace_property(&original, "TKO_STATUS", "in_progress")
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let replacements = exact_replacements([(&ticket.path, original, replacement)]);
+    Ok(PlannedMutation {
+        replacements,
+        output: format!("Updated {} -> in_progress\n", ticket.id),
+    })
+}
+
+pub(crate) fn plan_link(link: &ResolvedLink) -> Result<PlannedMutation> {
+    let left_original =
+        fs::read_to_string(&link.left.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let right_original =
+        fs::read_to_string(&link.right.path).map_err(|error| WriteError::new(error.to_string()))?;
+    let mut left = parse_ticket(&link.left.path, &left_original)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    let mut right = parse_ticket(&link.right.path, &right_original)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+
+    let left_changed = mutate_values(&mut left.properties.links, &link.right.id, Mutation::Add);
+    let right_changed = mutate_values(&mut right.properties.links, &link.left.id, Mutation::Add);
+    let left_replacement = replace_property(
+        &left_original,
+        "TKO_LINKS",
+        &format_list_value(&left.properties.links),
+    )
+    .map_err(|error| WriteError::new(error.to_string()))?;
+    let right_replacement = replace_property(
+        &right_original,
+        "TKO_LINKS",
+        &format_list_value(&right.properties.links),
+    )
+    .map_err(|error| WriteError::new(error.to_string()))?;
+
+    Ok(PlannedMutation {
+        replacements: exact_replacements([
+            (&link.left.path, left_original, left_replacement),
+            (&link.right.path, right_original, right_replacement),
+        ]),
+        output: relation_message(
+            RelationKind::Link,
+            Mutation::Add,
+            left_changed || right_changed,
+            &link.left.id,
+            &link.right.id,
+        ),
+    })
+}
+
+fn resolve_ticket(store: &TicketStore, id: &str) -> Result<ResolvedTicket> {
+    let path = store
+        .resolve_id(id)
+        .map_err(|error| WriteError::new(error.to_string()))?;
+    Ok(ResolvedTicket {
+        id: file_stem(&path)?,
+        path,
+    })
+}
+
+fn exact_replacements<const N: usize>(
+    replacements: [(&Path, String, String); N],
+) -> Vec<ExactReplacement> {
+    replacements
+        .into_iter()
+        .filter(|(_, original, replacement)| original != replacement)
+        .map(|(path, original, replacement)| ExactReplacement {
+            path: path.to_path_buf(),
+            original,
+            replacement,
+        })
+        .collect()
+}
+
 fn check_close_requirements(store: &TicketStore, resolved: &str) -> Result<()> {
     let ticket = store
         .load(resolved)
@@ -241,9 +359,8 @@ fn write_close_reason(store: &TicketStore, resolved: &str, reason: &str) -> Resu
 fn write_into_section(document: &str, heading: &str, paragraph: &str) -> String {
     let lines = document.split_inclusive('\n').collect::<Vec<_>>();
     let Some(heading_index) = lines.iter().position(|line| {
-        org_heading(line).is_some_and(|(level, title)| {
-            level == 2 && title.eq_ignore_ascii_case(heading)
-        })
+        org_heading(line)
+            .is_some_and(|(level, title)| level == 2 && title.eq_ignore_ascii_case(heading))
     }) else {
         let mut updated = document.to_string();
         if !updated.ends_with('\n') && !updated.is_empty() {

@@ -6,4 +6,5 @@ pub mod notes;
 pub mod query;
 pub mod read;
 pub mod storage;
+pub(crate) mod transaction;
 pub mod write;
